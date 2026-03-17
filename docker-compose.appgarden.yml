@@ -1,0 +1,28 @@
+version: "3.9"
+services:
+  uat-bot:
+    image: kamiwazaai/uat-bot:0.1.0
+    ports:
+      - "18090"
+    environment:
+      - KAMIWAZA_URL=${KAMIWAZA_URL:-https://host.docker.internal}
+      - KAMIWAZA_ADMIN_USER=${KAMIWAZA_ADMIN_USER:-admin}
+      - KAMIWAZA_ADMIN_PASSWORD=${KAMIWAZA_ADMIN_PASSWORD}
+      - KAMIWAZA_ADMIN_TOKEN=${KAMIWAZA_ADMIN_TOKEN:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - UAT_DATA_DIR=/data
+      - UAT_PORT=${UAT_PORT:-18090}
+      - UAT_EXTENSION_ROOTS=${UAT_EXTENSION_ROOTS:-}
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+    volumes:
+      - uat-bot-data:/data
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: "3G"
+
+volumes:
+  uat-bot-data:

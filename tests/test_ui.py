@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+import pytest
+
+fastapi = pytest.importorskip("fastapi")
+TestClient = pytest.importorskip("fastapi.testclient").TestClient
+create_app = pytest.importorskip("uat_bot.main").create_app
+
+
+def test_root_route_serves_ui():
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "UAT Bot Control Center" in response.text
+
+
+def test_meta_contains_root_endpoint():
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/meta")
+        assert response.status_code == 200
+        payload = response.json()
+        assert "/" in payload["endpoints"]

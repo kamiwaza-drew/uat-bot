@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Pytest
+.pytest_cache/
+htmlcov/
+.coverage
+
+# UAT results (large, generated)
+data/runs/
+*.har
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+uv.lock

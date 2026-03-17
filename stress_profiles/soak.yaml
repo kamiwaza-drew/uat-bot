@@ -1,0 +1,9 @@
+name: soak
+concurrent_users: 5
+role_distribution: {admin: 1, editor: 2, viewer: 2}
+browser_distribution: {chromium: 3, firefox: 1, webkit: 1}
+os_emulation: [win-chrome, mac-firefox, mac-safari]
+scenarios: [login]
+duration_seconds: 3600
+ramp_up_seconds: 30
+vision_enabled: false

@@ -1,0 +1,10 @@
+name: load
+concurrent_users: 20
+role_distribution: {admin: 2, editor: 8, viewer: 10}
+browser_distribution: {chromium: 10, firefox: 6, webkit: 4}
+os_emulation: [win-chrome, mac-safari, mac-firefox, linux-chrome, iphone-15, pixel-7]
+scenarios: [login]
+duration_seconds: 600
+ramp_up_seconds: 60
+vision_enabled: true
+exploratory_pct: 0.1

@@ -1,0 +1,9 @@
+name: smoke
+concurrent_users: 3
+role_distribution: {admin: 1, editor: 1, viewer: 1}
+browser_distribution: {chromium: 1, firefox: 1, webkit: 1}
+os_emulation: [win-chrome, mac-firefox, mac-safari]
+scenarios: [login]
+duration_seconds: 120
+ramp_up_seconds: 10
+vision_enabled: false

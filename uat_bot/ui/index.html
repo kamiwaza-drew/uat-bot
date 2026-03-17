@@ -1,0 +1,1005 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UAT Bot Control Center</title>
+  <style>
+    :root {
+      --bg: #f2f7f5;
+      --panel: #ffffff;
+      --ink: #10211f;
+      --muted: #4d6460;
+      --line: #d6e2df;
+      --brand: #0e7a63;
+      --brand-2: #0a5e4d;
+      --warn: #b35a00;
+      --err: #b42318;
+      --ok: #117f2d;
+      --shadow: 0 10px 24px rgba(16, 33, 31, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background: radial-gradient(circle at 0% 0%, #dff5ee 0%, var(--bg) 45%);
+      overflow-x: hidden;
+    }
+
+    .shell {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 370px 1fr;
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0.2px;
+    }
+
+    .sub {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .header {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 6px 10px;
+      background: #f9fcfb;
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      display: inline-block;
+    }
+
+    .section-title {
+      margin: 0 0 12px;
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    input, select, textarea, button {
+      font: inherit;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    textarea { min-height: 72px; resize: vertical; }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .btn-primary { background: var(--brand); color: #fff; }
+    .btn-primary:hover { background: var(--brand-2); }
+    .btn-secondary { background: #eef3f2; color: var(--ink); }
+    .btn-danger { background: #ffe8e8; color: var(--err); }
+    .btn-icon {
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+    }
+    .btn-icon svg { width: 16px; height: 16px; fill: currentColor; }
+
+    .main-stack {
+      display: grid;
+      grid-template-rows: auto auto auto;
+      gap: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      padding: 8px 6px;
+      vertical-align: top;
+    }
+
+    th { color: var(--muted); font-weight: 600; }
+
+    .status {
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 4px 8px;
+      display: inline-block;
+      border: 1px solid;
+    }
+
+    .PENDING { color: #6a7280; border-color: #c2c9d3; background: #f3f6fa; }
+    .RUNNING { color: #0b6e8e; border-color: #99d8ef; background: #e9f8ff; }
+    .COMPLETED { color: var(--ok); border-color: #98dbab; background: #ecfdf1; }
+    .FAILED, .CANCELLED { color: var(--err); border-color: #f3b0b0; background: #fff0f0; }
+
+    .layout-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .layout-2 > * { min-width: 0; }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    pre {
+      margin: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: #f7fbfa;
+      border: 1px solid var(--line);
+      font-size: 12px;
+      overflow: auto;
+      max-height: 320px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .events {
+      height: 320px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f7fbfa;
+      padding: 10px;
+      font-size: 12px;
+    }
+
+    .event-row { margin: 0 0 8px; }
+    .event-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .event-content {
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .event-type { font-weight: 700; color: var(--brand-2); }
+    .event-ts { color: var(--muted); margin-right: 6px; }
+    .btn-copy {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      padding: 0;
+      flex: 0 0 auto;
+    }
+    .btn-copy svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    .shots {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+    }
+
+    .shot {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .shot img {
+      width: 100%;
+      display: block;
+      aspect-ratio: 16 / 10;
+      object-fit: cover;
+      background: #e9efed;
+    }
+
+    .shot div {
+      font-size: 11px;
+      padding: 8px;
+      word-break: break-all;
+      color: var(--muted);
+    }
+
+    .message {
+      margin-top: 8px;
+      font-size: 12px;
+      min-height: 18px;
+    }
+
+    .err { color: var(--err); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .run-link {
+      color: var(--brand-2);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .run-link:hover { text-decoration: underline; }
+    .run-row { cursor: pointer; }
+
+    @media (max-width: 1100px) {
+      .shell { grid-template-columns: 1fr; }
+      .layout-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="header card">
+      <div>
+        <h1>UAT Bot Control Center</h1>
+        <p class="sub">Run stress tests, monitor progress live, and jump to reports.</p>
+      </div>
+      <div class="pill"><span class="dot"></span><span id="service-status">Service online</span></div>
+    </div>
+
+    <section class="card">
+      <h2 class="section-title">Start Run</h2>
+
+      <div class="grid2">
+        <div>
+          <label for="profile">Profile Preset</label>
+          <select id="profile"></select>
+        </div>
+        <div>
+          <label for="component">Component (optional)</label>
+          <input id="component" placeholder="graphiti" />
+        </div>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="kamiwaza-url">Kamiwaza URL (optional override, falls back to env)</label>
+        <input id="kamiwaza-url" placeholder="https://test.kamiwaza.dev" />
+      </div>
+
+      <div class="grid2" style="margin-top:10px;">
+        <div>
+          <label for="kamiwaza-admin-user">Admin User (optional override)</label>
+          <input id="kamiwaza-admin-user" placeholder="admin" />
+        </div>
+        <div>
+          <label for="kamiwaza-admin-password">Admin Password (optional override)</label>
+          <input id="kamiwaza-admin-password" type="password" placeholder="••••••••" />
+        </div>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="kamiwaza-admin-token">Admin Token (optional override)</label>
+        <input id="kamiwaza-admin-token" type="password" placeholder="Bearer token" />
+      </div>
+
+      <div class="grid2" style="margin-top:10px;">
+        <div>
+          <label for="concurrent">Concurrent Users</label>
+          <input id="concurrent" type="number" min="1" value="3" />
+        </div>
+        <div>
+          <label for="duration">Duration (seconds)</label>
+          <input id="duration" type="number" min="10" value="120" />
+        </div>
+      </div>
+
+      <div class="grid2" style="margin-top:10px;">
+        <div>
+          <label for="ramp">Ramp-Up (seconds)</label>
+          <input id="ramp" type="number" min="0" value="10" />
+        </div>
+        <div>
+          <label for="exploratory">Exploratory % (0-1)</label>
+          <input id="exploratory" type="number" min="0" max="1" step="0.05" value="0" />
+        </div>
+      </div>
+
+      <div class="grid2" style="margin-top:10px;">
+        <div>
+          <label>Role Distribution (admin/editor/viewer)</label>
+          <div class="grid2">
+            <input id="role-admin" type="number" min="0" value="1" />
+            <input id="role-editor" type="number" min="0" value="1" />
+            <input id="role-viewer" type="number" min="0" value="1" />
+          </div>
+        </div>
+        <div>
+          <label>Browser Distribution (chromium/firefox/webkit)</label>
+          <div class="grid2">
+            <input id="browser-chromium" type="number" min="0" value="1" />
+            <input id="browser-firefox" type="number" min="0" value="1" />
+            <input id="browser-webkit" type="number" min="0" value="1" />
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="os">OS Emulation (comma separated)</label>
+        <input id="os" value="win-chrome,mac-firefox,mac-safari" />
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="scenarios">Scenarios (comma separated)</label>
+        <input id="scenarios" value="login" />
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="weights">Scenario Weights JSON (optional)</label>
+        <textarea id="weights" placeholder='{"login": 1}'></textarea>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label><input id="vision" type="checkbox" /> Vision Enabled</label>
+      </div>
+
+      <div class="actions">
+        <button class="btn-primary" id="start-run">Start Run</button>
+        <button class="btn-secondary" id="refresh-runs">Refresh Runs</button>
+      </div>
+      <div class="message" id="start-message"></div>
+    </section>
+
+    <div class="main-stack">
+      <section class="card">
+        <div class="panel-head">
+          <h2 class="section-title" style="margin:0;">Runs</h2>
+          <span class="pill">Click a run ID to inspect + stream</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Status</th>
+              <th>Users</th>
+              <th>Workers</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="runs-table"></tbody>
+        </table>
+      </section>
+
+      <section class="card layout-2">
+        <div>
+          <div class="panel-head">
+            <h2 class="section-title" style="margin:0;">Run Detail</h2>
+            <div class="actions" style="margin:0;">
+              <button class="btn-secondary btn-icon" id="copy-run-detail" title="Copy run detail" aria-label="Copy run detail">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H10V7h9v14z"/>
+                </svg>
+              </button>
+              <button class="btn-secondary" id="open-report">Open Report</button>
+              <button class="btn-danger" id="stop-run">Stop Run</button>
+            </div>
+          </div>
+          <pre id="run-detail">Select a run to view details.</pre>
+        </div>
+        <div>
+          <div class="panel-head">
+            <h2 class="section-title" style="margin:0;">Live Events</h2>
+            <div class="actions" style="margin:0;">
+              <button class="btn-secondary btn-icon" id="copy-live-events" title="Copy live events" aria-label="Copy live events">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H10V7h9v14z"/>
+                </svg>
+              </button>
+              <span class="pill" id="ws-state">WS: idle</span>
+            </div>
+          </div>
+          <div class="events" id="events"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="panel-head">
+          <h2 class="section-title" style="margin:0;">Latest Screenshots</h2>
+          <span class="pill">Auto-updates from websocket</span>
+        </div>
+        <div class="shots" id="shots"></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const profiles = {
+      smoke: {
+        concurrent_users: 3,
+        role_distribution: { admin: 1, editor: 1, viewer: 1 },
+        browser_distribution: { chromium: 1, firefox: 1, webkit: 1 },
+        os_emulation: ["win-chrome", "mac-firefox", "mac-safari"],
+        scenarios: ["login"],
+        scenario_weights: { login: 1 },
+        duration_seconds: 120,
+        ramp_up_seconds: 10,
+        vision_enabled: false,
+        exploratory_pct: 0,
+      },
+      load: {
+        concurrent_users: 20,
+        role_distribution: { admin: 2, editor: 8, viewer: 10 },
+        browser_distribution: { chromium: 10, firefox: 6, webkit: 4 },
+        os_emulation: ["win-chrome", "mac-safari", "mac-firefox", "linux-chrome", "iphone-15", "pixel-7"],
+        scenarios: ["login"],
+        scenario_weights: { login: 1 },
+        duration_seconds: 600,
+        ramp_up_seconds: 60,
+        vision_enabled: true,
+        exploratory_pct: 0.1,
+      },
+      soak: {
+        concurrent_users: 5,
+        role_distribution: { admin: 1, editor: 2, viewer: 2 },
+        browser_distribution: { chromium: 3, firefox: 1, webkit: 1 },
+        os_emulation: ["win-chrome", "mac-firefox", "mac-safari"],
+        scenarios: ["login"],
+        scenario_weights: { login: 1 },
+        duration_seconds: 3600,
+        ramp_up_seconds: 30,
+        vision_enabled: false,
+        exploratory_pct: 0,
+      },
+    };
+
+    let activeRunId = null;
+    let ws = null;
+    let refreshTimer = null;
+    const shots = new Map();
+
+    const el = (id) => document.getElementById(id);
+
+    function setMessage(text, cls = "") {
+      const node = el("start-message");
+      node.textContent = text;
+      node.className = `message ${cls}`.trim();
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function copyIconSvg() {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H10V7h9v14z"/>
+        </svg>
+      `;
+    }
+
+    async function copyToClipboard(text, successLabel = "Copied to clipboard.") {
+      if (!text) {
+        setMessage("Nothing to copy.", "warn");
+        return;
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        setMessage(successLabel, "ok");
+      } catch {
+        setMessage("Clipboard copy failed.", "err");
+      }
+    }
+
+    function listToCsv(arr) {
+      return (arr || []).join(",");
+    }
+
+    function csvToList(value) {
+      return String(value || "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+
+    function applyProfile(name) {
+      const p = profiles[name];
+      if (!p) { return; }
+      el("concurrent").value = p.concurrent_users;
+      el("duration").value = p.duration_seconds;
+      el("ramp").value = p.ramp_up_seconds;
+      el("exploratory").value = p.exploratory_pct;
+      el("role-admin").value = p.role_distribution.admin || 0;
+      el("role-editor").value = p.role_distribution.editor || 0;
+      el("role-viewer").value = p.role_distribution.viewer || 0;
+      el("browser-chromium").value = p.browser_distribution.chromium || 0;
+      el("browser-firefox").value = p.browser_distribution.firefox || 0;
+      el("browser-webkit").value = p.browser_distribution.webkit || 0;
+      el("os").value = listToCsv(p.os_emulation);
+      el("scenarios").value = listToCsv(p.scenarios);
+      el("weights").value = JSON.stringify(p.scenario_weights || {}, null, 2);
+      el("vision").checked = Boolean(p.vision_enabled);
+    }
+
+    function initProfiles() {
+      const select = el("profile");
+      Object.keys(profiles).forEach((k) => {
+        const opt = document.createElement("option");
+        opt.value = k;
+        opt.textContent = k;
+        select.appendChild(opt);
+      });
+      select.value = "smoke";
+      applyProfile("smoke");
+      select.addEventListener("change", () => applyProfile(select.value));
+    }
+
+    function safeJsonParse(text) {
+      if (!text || !text.trim()) { return {}; }
+      try { return JSON.parse(text); }
+      catch { throw new Error("Scenario Weights must be valid JSON."); }
+    }
+
+    function toInt(id) {
+      return parseInt(el(id).value || "0", 10);
+    }
+
+    function trimOrNull(id) {
+      const value = String(el(id).value || "").trim();
+      return value || null;
+    }
+
+    function buildPayload() {
+      const payload = {
+        concurrent_users: toInt("concurrent"),
+        role_distribution: {
+          admin: toInt("role-admin"),
+          editor: toInt("role-editor"),
+          viewer: toInt("role-viewer"),
+        },
+        browser_distribution: {
+          chromium: toInt("browser-chromium"),
+          firefox: toInt("browser-firefox"),
+          webkit: toInt("browser-webkit"),
+        },
+        os_emulation: csvToList(el("os").value),
+        scenarios: csvToList(el("scenarios").value),
+        scenario_weights: safeJsonParse(el("weights").value),
+        component: (el("component").value || "").trim() || null,
+        kamiwaza_url: trimOrNull("kamiwaza-url"),
+        kamiwaza_admin_user: trimOrNull("kamiwaza-admin-user"),
+        kamiwaza_admin_password: trimOrNull("kamiwaza-admin-password"),
+        kamiwaza_admin_token: trimOrNull("kamiwaza-admin-token"),
+        duration_seconds: toInt("duration"),
+        ramp_up_seconds: toInt("ramp"),
+        vision_enabled: el("vision").checked,
+        exploratory_pct: parseFloat(el("exploratory").value || "0"),
+      };
+
+      const roleSum = Object.values(payload.role_distribution).reduce((a, b) => a + b, 0);
+      const browserSum = Object.values(payload.browser_distribution).reduce((a, b) => a + b, 0);
+      if (payload.concurrent_users < 1) {
+        throw new Error("Concurrent users must be at least 1.");
+      }
+      if (roleSum !== payload.concurrent_users) {
+        throw new Error(`Role distribution total (${roleSum}) must equal concurrent users (${payload.concurrent_users}).`);
+      }
+      if (browserSum !== payload.concurrent_users) {
+        throw new Error(`Browser distribution total (${browserSum}) must equal concurrent users (${payload.concurrent_users}).`);
+      }
+      return payload;
+    }
+
+    async function startRun() {
+      try {
+        const payload = buildPayload();
+        setMessage("Starting run...", "warn");
+        const res = await fetch("/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setMessage(data.detail || "Failed to start run.", "err");
+          return;
+        }
+        setMessage(`Run ${data.run_id} started.`, "ok");
+        activeRunId = data.run_id;
+        await refreshRuns();
+        await loadRunDetail();
+        connectLive();
+      } catch (err) {
+        setMessage(err.message || String(err), "err");
+      }
+    }
+
+    function statusBadge(status) {
+      return `<span class="status ${status}">${status}</span>`;
+    }
+
+    async function refreshRuns() {
+      const tbody = el("runs-table");
+      const res = await fetch("/runs");
+      const runs = await res.json();
+      tbody.innerHTML = "";
+
+      if (!Array.isArray(runs) || runs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6">No runs yet.</td></tr>';
+        return;
+      }
+
+      runs.forEach((run) => {
+        const tr = document.createElement("tr");
+        tr.className = "run-row";
+        tr.setAttribute("data-run-select", run.run_id);
+        tr.innerHTML = `
+          <td><a class="run-link" href="/runs/${run.run_id}/report" target="_blank" rel="noopener">${run.run_id.slice(0, 12)}</a></td>
+          <td>${statusBadge(run.status)}</td>
+          <td>${run.concurrent_users}</td>
+          <td>${run.completed_workers}/${run.concurrent_users}</td>
+          <td>${new Date(run.created_at).toLocaleString()}</td>
+          <td>
+            <button class="btn-secondary" data-run-inspect="${run.run_id}" style="padding:4px 8px;">Inspect</button>
+            <button class="btn-danger btn-icon" data-run-delete="${run.run_id}" aria-label="Delete run ${run.run_id}" title="Delete run">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/>
+              </svg>
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      tbody.querySelectorAll("tr[data-run-select]").forEach((row) => {
+        row.addEventListener("click", async (evt) => {
+          if (evt.target.closest("a,button")) {
+            return;
+          }
+          activeRunId = row.getAttribute("data-run-select");
+          await loadRunDetail();
+          connectLive();
+        });
+      });
+
+      tbody.querySelectorAll("button[data-run-inspect]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          activeRunId = btn.getAttribute("data-run-inspect");
+          await loadRunDetail();
+          connectLive();
+        });
+      });
+
+      tbody.querySelectorAll("button[data-run-delete]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const runId = btn.getAttribute("data-run-delete");
+          await purgeRun(runId);
+        });
+      });
+    }
+
+    async function loadRunDetail() {
+      const detail = el("run-detail");
+      if (!activeRunId) {
+        detail.textContent = "Select a run to view details.";
+        return;
+      }
+      const res = await fetch(`/runs/${activeRunId}`);
+      const data = await res.json();
+      if (!res.ok) {
+        detail.textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+      detail.textContent = JSON.stringify(data, null, 2);
+    }
+
+    function eventRow(evt) {
+      const ts = evt.ts ? new Date(evt.ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+      const eventType = evt.type || "event";
+      const payload = evt.payload ? JSON.stringify(evt.payload) : "{}";
+      const lineText = JSON.stringify(evt, null, 2);
+      const encodedLine = encodeURIComponent(lineText);
+      return `
+        <div class="event-row">
+          <div class="event-content">
+            <span class="event-ts">${escapeHtml(ts)}</span>
+            <span class="event-type">${escapeHtml(eventType)}</span>
+            ${escapeHtml(payload)}
+          </div>
+          <button class="btn-secondary btn-copy" data-copy="${encodedLine}" title="Copy event log line" aria-label="Copy event log line">
+            ${copyIconSvg()}
+          </button>
+        </div>
+      `;
+    }
+
+    function addEvent(evt) {
+      if (evt.type === "heartbeat") {
+        return;
+      }
+      const box = el("events");
+      box.insertAdjacentHTML("afterbegin", eventRow(evt));
+      while (box.children.length > 200) {
+        box.removeChild(box.lastChild);
+      }
+    }
+
+    function gatherEventLogText() {
+      const lines = [];
+      el("events").querySelectorAll("button[data-copy]").forEach((btn) => {
+        try {
+          lines.push(decodeURIComponent(btn.getAttribute("data-copy") || ""));
+        } catch {
+          // ignore malformed copy payload
+        }
+      });
+      return lines.join("\n\n");
+    }
+
+    function renderShots() {
+      const container = el("shots");
+      const items = Array.from(shots.values()).slice(-24).reverse();
+      container.innerHTML = "";
+      if (items.length === 0) {
+        container.innerHTML = "<div class='sub'>Screenshots will appear here during a run.</div>";
+        return;
+      }
+      items.forEach((item) => {
+        const a = document.createElement("a");
+        a.href = item.url;
+        a.target = "_blank";
+        a.className = "shot";
+        a.innerHTML = `<img src="${item.url}" alt="${item.path}" /><div>${item.path}</div>`;
+        container.appendChild(a);
+      });
+    }
+
+    function saveShot(path) {
+      if (!activeRunId || !path) {
+        return;
+      }
+      const url = `/runs/${activeRunId}/artifacts/${path}`;
+      shots.set(path, { path, url, ts: Date.now() });
+      renderShots();
+    }
+
+    function connectLive() {
+      const badge = el("ws-state");
+      if (!activeRunId) {
+        badge.textContent = "WS: idle";
+        return;
+      }
+
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${protocol}://${location.host}/live/${activeRunId}`);
+
+      ws.onopen = () => {
+        badge.textContent = "WS: connected";
+      };
+      ws.onclose = () => {
+        badge.textContent = "WS: closed";
+      };
+      ws.onerror = () => {
+        badge.textContent = "WS: error";
+      };
+      ws.onmessage = (msg) => {
+        try {
+          const evt = JSON.parse(msg.data);
+          addEvent(evt);
+          if (evt.type === "worker.screenshot" && evt.payload && evt.payload.screenshot) {
+            saveShot(evt.payload.screenshot);
+          }
+          if (evt.type === "stream.complete") {
+            loadRunDetail();
+            refreshRuns();
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      };
+    }
+
+    async function stopRun() {
+      if (!activeRunId) {
+        setMessage("Select a run first.", "warn");
+        return;
+      }
+      const res = await fetch(`/runs/${activeRunId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.detail || "Failed to stop run.", "err");
+        return;
+      }
+      setMessage(`Run ${activeRunId} stop requested.`, "warn");
+      await loadRunDetail();
+      await refreshRuns();
+    }
+
+    async function purgeRun(runId) {
+      if (!runId) {
+        return;
+      }
+      if (!window.confirm(`Delete run ${runId.slice(0, 12)} and all artifacts?`)) {
+        return;
+      }
+
+      const res = await fetch(`/runs/${runId}/purge`, { method: "DELETE" });
+      const body = await res.text();
+      let data = {};
+      if (body && body.trim()) {
+        try {
+          data = JSON.parse(body);
+        } catch {
+          data = {};
+        }
+      }
+      if (!res.ok) {
+        setMessage(data.detail || `Failed to delete run ${runId}.`, "err");
+        return;
+      }
+
+      if (activeRunId === runId) {
+        activeRunId = null;
+        shots.clear();
+        renderShots();
+        el("events").innerHTML = "";
+        if (ws) {
+          ws.close();
+          ws = null;
+        }
+        el("ws-state").textContent = "WS: idle";
+      }
+
+      setMessage(`Run ${runId} deleted.`, "ok");
+      await refreshRuns();
+      await loadRunDetail();
+    }
+
+    function openReport() {
+      if (!activeRunId) {
+        setMessage("Select a run first.", "warn");
+        return;
+      }
+      window.open(`/runs/${activeRunId}/report`, "_blank");
+    }
+
+    async function bootstrap() {
+      initProfiles();
+      el("start-run").addEventListener("click", startRun);
+      el("refresh-runs").addEventListener("click", refreshRuns);
+      el("stop-run").addEventListener("click", stopRun);
+      el("open-report").addEventListener("click", openReport);
+      el("copy-run-detail").addEventListener("click", () => {
+        copyToClipboard(el("run-detail").textContent || "", "Run detail copied.");
+      });
+      el("copy-live-events").addEventListener("click", () => {
+        copyToClipboard(gatherEventLogText(), "Live events copied.");
+      });
+      el("events").addEventListener("click", (evt) => {
+        const copyBtn = evt.target.closest("button[data-copy]");
+        if (!copyBtn) {
+          return;
+        }
+        const encoded = copyBtn.getAttribute("data-copy") || "";
+        let decoded = "";
+        try {
+          decoded = decodeURIComponent(encoded);
+        } catch {
+          decoded = encoded;
+        }
+        copyToClipboard(decoded, "Event log line copied.");
+      });
+
+      await refreshRuns();
+      await loadRunDetail();
+
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+      }
+      refreshTimer = setInterval(() => {
+        refreshRuns();
+        if (activeRunId) {
+          loadRunDetail();
+        }
+      }, 5000);
+    }
+
+    bootstrap().catch((err) => {
+      el("service-status").textContent = `UI error: ${err.message || String(err)}`;
+      el("service-status").className = "err";
+    });
+  </script>
+</body>
+</html>

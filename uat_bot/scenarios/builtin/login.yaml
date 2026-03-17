@@ -1,0 +1,14 @@
+name: login
+description: Basic login flow to prove credentials and browser launch.
+timeout: 120
+required_role: viewer
+steps:
+  - action: navigate
+    url: /
+    wait_for: domcontentloaded
+  - action: fill
+    target: username
+  - action: fill
+    target: password
+  - action: click
+    target: submit

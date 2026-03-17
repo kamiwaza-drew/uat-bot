@@ -1,0 +1,25 @@
+{
+  "name": "uat-bot",
+  "display_name": "UAT Bot",
+  "template_type": "app",
+  "version": "0.1.0",
+  "kamiwaza_version": ">=0.10.0",
+  "source_type": "kamiwaza",
+  "visibility": "public",
+  "description": "Containerized vision-guided stress testing bot for Kamiwaza.",
+  "risk_tier": 1,
+  "verified": false,
+  "preview_image": "images/uat-bot-preview.svg",
+  "tags": [
+    "uat",
+    "playwright",
+    "qa",
+    "load-testing",
+    "kamiwaza"
+  ],
+  "env_defaults": {
+    "KAMIWAZA_URL": "{kamiwaza_origin}",
+    "KAMIWAZA_ADMIN_USER": "admin",
+    "UAT_PORT": "18090"
+  }
+}

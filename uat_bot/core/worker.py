@@ -12,6 +12,8 @@ from uat_bot.browser.profiles import get_profile
 from uat_bot.browser.screenshots import ScreenshotManager
 from uat_bot.config import Settings
 from uat_bot.models import WorkerAssignment
+from uat_bot.scenarios.loader import Scenario, load_all_scenarios, pick_scenario
+from uat_bot.scenarios.runner import ScenarioRunner
 
 MetricSink = Callable[[dict[str, Any]], Awaitable[None]]
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -29,6 +31,8 @@ class Worker:
         component: str | None = None,
         guidance_context: str | None = None,
         target_url: str | None = None,
+        vision_client: Any | None = None,
+        scenario_weights: dict[str, int] | None = None,
     ) -> None:
         self.run_id = run_id
         self.assignment = assignment
@@ -39,12 +43,31 @@ class Worker:
         self.component = component
         self.guidance_context = guidance_context or ""
         self.target_url = (target_url or settings.kamiwaza_url or "").rstrip("/")
+        self.vision_client = vision_client
+        self.scenario_weights = scenario_weights or {}
         self._step = 0
         self.effective_browser = assignment.browser
+
+    @property
+    def _user_context(self) -> dict[str, str]:
+        """Context dict passed to scenario runner for placeholder resolution."""
+        return {
+            "ts": datetime.now(UTC).isoformat(),
+            "user_id": self.assignment.user.username,
+            "username": self.assignment.user.username,
+            "password": self.assignment.user.password,
+            "role": self.assignment.user.role,
+            "browser": self.effective_browser,
+            "os_profile": self.assignment.os_profile,
+            "component": self.component or "",
+        }
 
     async def run(self, duration_seconds: int, cancel_event: asyncio.Event) -> None:
         started = perf_counter()
         profile = get_profile(self.assignment.os_profile)
+
+        # Load all available scenarios
+        available_scenarios = load_all_scenarios()
 
         async with async_playwright() as pw:
             browser = await self._launch_browser(pw, self.assignment.browser)
@@ -61,46 +84,108 @@ class Worker:
             try:
                 page = await context.new_page()
                 await self._attach_listeners(page)
+
+                # Always login first
                 await self._login(page)
 
+                # Run assigned scenarios in a loop until duration expires
                 while perf_counter() - started < duration_seconds and not cancel_event.is_set():
-                    self._step += 1
-                    ts_start = perf_counter()
-                    shot_path = await self.screenshot_manager.capture(
-                        page,
-                        self.assignment.worker_id,
-                        self._step,
-                        "heartbeat",
-                        full_page=False,
+                    scenario = pick_scenario(
+                        available=available_scenarios,
+                        assigned_names=self.assignment.scenarios,
+                        weights=self.scenario_weights,
+                        user_role=self.assignment.user.role,
                     )
-                    duration_ms = int((perf_counter() - ts_start) * 1000)
-                    await self.metric_sink(
-                        {
-                            "ts": datetime.now(UTC).isoformat(),
-                            "run_id": self.run_id,
-                            "worker_id": self.assignment.worker_id,
-                            "user_id": self.assignment.user.username,
-                            "role": self.assignment.user.role,
-                            "browser": self.effective_browser,
-                            "os_profile": self.assignment.os_profile,
-                            "action": "heartbeat",
-                            "status": "ok",
-                            "duration_ms": duration_ms,
-                            "screenshot": shot_path.name,
-                            "detail": "post-login steady-state capture",
-                        }
+
+                    if scenario is None:
+                        # No eligible scenarios — fall back to heartbeat
+                        await self._heartbeat(page)
+                        await asyncio.sleep(5)
+                        continue
+
+                    if scenario.name == "login":
+                        # Already logged in, skip re-login scenario
+                        await asyncio.sleep(2)
+                        continue
+
+                    # Calculate remaining time
+                    elapsed = perf_counter() - started
+                    remaining = max(10, duration_seconds - elapsed)
+
+                    runner = ScenarioRunner(
+                        page=page,
+                        scenario=scenario,
+                        screenshot_manager=self.screenshot_manager,
+                        worker_id=self.assignment.worker_id,
+                        run_id=self.run_id,
+                        user_context=self._user_context,
+                        metric_sink=self.metric_sink,
+                        event_sink=self.event_sink,
+                        base_url=self.target_url,
+                        vision_client=self.vision_client,
+                        guidance_context=self.guidance_context,
+                        step_offset=self._step,
                     )
-                    await self.event_sink(
-                        "worker.screenshot",
-                        {
-                            "worker_id": self.assignment.worker_id,
-                            "screenshot": shot_path.relative_to(self.screenshot_manager.run_dir).as_posix(),
-                        },
-                    )
-                    await asyncio.sleep(5)
+
+                    try:
+                        results = await asyncio.wait_for(
+                            runner.run(cancel_event=cancel_event),
+                            timeout=min(remaining, scenario.timeout),
+                        )
+                        self._step = runner.step_counter
+                    except asyncio.TimeoutError:
+                        self._step = runner.step_counter
+                        await self.metric_sink(
+                            {
+                                **self._user_context,
+                                "run_id": self.run_id,
+                                "worker_id": self.assignment.worker_id,
+                                "action": "scenario_timeout",
+                                "status": "error",
+                                "duration_ms": int((perf_counter() - started) * 1000),
+                                "detail": f"scenario {scenario.name} timed out",
+                            }
+                        )
+
+                    # Think time between scenarios (simulate human)
+                    if not cancel_event.is_set():
+                        await asyncio.sleep(2)
+
             finally:
                 await context.close()
                 await browser.close()
+
+    async def _heartbeat(self, page: Page) -> None:
+        """Capture a heartbeat screenshot when no scenarios are available."""
+        self._step += 1
+        ts_start = perf_counter()
+        shot_path = await self.screenshot_manager.capture(
+            page,
+            self.assignment.worker_id,
+            self._step,
+            "heartbeat",
+            full_page=False,
+        )
+        duration_ms = int((perf_counter() - ts_start) * 1000)
+        await self.metric_sink(
+            {
+                **self._user_context,
+                "run_id": self.run_id,
+                "worker_id": self.assignment.worker_id,
+                "action": "heartbeat",
+                "status": "ok",
+                "duration_ms": duration_ms,
+                "screenshot": shot_path.name,
+                "detail": "steady-state capture",
+            }
+        )
+        await self.event_sink(
+            "worker.screenshot",
+            {
+                "worker_id": self.assignment.worker_id,
+                "screenshot": shot_path.relative_to(self.screenshot_manager.run_dir).as_posix(),
+            },
+        )
 
     @staticmethod
     def _chromium_executable() -> str | None:
@@ -196,6 +281,7 @@ class Worker:
         )
 
     async def _login(self, page: Page) -> None:
+        """Perform initial login using the built-in login flow."""
         await self.event_sink(
             "worker.started",
             {
@@ -205,6 +291,7 @@ class Worker:
                 "os_profile": self.assignment.os_profile,
                 "component": self.component,
                 "guidance_loaded": bool(self.guidance_context),
+                "scenarios": self.assignment.scenarios,
             },
         )
 
@@ -222,14 +309,9 @@ class Worker:
         )
         await self.metric_sink(
             {
-                "ts": datetime.now(UTC).isoformat(),
+                **self._user_context,
                 "run_id": self.run_id,
                 "worker_id": self.assignment.worker_id,
-                "user_id": self.assignment.user.username,
-                "role": self.assignment.user.role,
-                "browser": self.effective_browser,
-                "os_profile": self.assignment.os_profile,
-                "component": self.component,
                 "action": "navigate",
                 "status": "ok",
                 "duration_ms": int((perf_counter() - ts_start) * 1000),
@@ -237,6 +319,17 @@ class Worker:
                 "detail": "landing page loaded",
             }
         )
+
+        # Handle consent gate if present
+        from uat_bot.browser.actions import resolve_selector
+
+        consent_sel = await resolve_selector(page, "consent_accept")
+        if consent_sel:
+            try:
+                await page.click(consent_sel, timeout=3000)
+                await asyncio.sleep(1)
+            except Error:
+                pass  # No consent gate, continue
 
         username_selector = await self._first_visible(
             page,
@@ -270,7 +363,7 @@ class Worker:
             err = "unable to locate login inputs"
             await self.metric_sink(
                 {
-                    "ts": datetime.now(UTC).isoformat(),
+                    **self._user_context,
                     "run_id": self.run_id,
                     "worker_id": self.assignment.worker_id,
                     "action": "login",
@@ -302,14 +395,9 @@ class Worker:
         )
         await self.metric_sink(
             {
-                "ts": datetime.now(UTC).isoformat(),
+                **self._user_context,
                 "run_id": self.run_id,
                 "worker_id": self.assignment.worker_id,
-                "user_id": self.assignment.user.username,
-                "role": self.assignment.user.role,
-                "browser": self.effective_browser,
-                "os_profile": self.assignment.os_profile,
-                "component": self.component,
                 "action": "login",
                 "status": "ok",
                 "duration_ms": int((perf_counter() - ts_start) * 1000),

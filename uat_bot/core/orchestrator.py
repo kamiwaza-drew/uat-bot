@@ -17,6 +17,8 @@ from uat_bot.models import RunCreateRequest, RunDetail, RunStatus, RunSummary
 from uat_bot.reporting.generator import ReportGenerator
 from uat_bot.scenarios.uat_context import UATContextLoader
 from uat_bot.stress.planner import AssignmentPlanner
+from uat_bot.stress.ramp import ramp_delay_seconds
+from uat_bot.vision.client import VisionClient
 
 
 class StressOrchestrator:
@@ -170,13 +172,22 @@ class StressOrchestrator:
                 scenarios=state.config.scenarios,
             )
 
+            # Build vision client if enabled and API key is available
+            vision_client = None
+            if state.config.vision_enabled and self.settings.anthropic_api_key:
+                vision_client = VisionClient(
+                    api_key=self.settings.anthropic_api_key,
+                    model=self.settings.uat_vision_model,
+                    model_complex=self.settings.uat_vision_model_complex,
+                )
+
             semaphore = asyncio.Semaphore(self.settings.uat_max_workers)
             worker_tasks: list[asyncio.Task[None]] = []
 
             for idx, assignment in enumerate(assignments):
-                delay = 0.0
-                if len(assignments) > 1 and state.config.ramp_up_seconds > 0:
-                    delay = (state.config.ramp_up_seconds / max(1, len(assignments) - 1)) * idx
+                delay = ramp_delay_seconds(
+                    idx, len(assignments), state.config.ramp_up_seconds
+                )
 
                 task = asyncio.create_task(
                     self._run_worker(
@@ -186,6 +197,7 @@ class StressOrchestrator:
                         semaphore=semaphore,
                         screenshot_manager=screenshot_manager,
                         metric_sink=metric_sink,
+                        vision_client=vision_client,
                     )
                 )
                 worker_tasks.append(task)
@@ -242,6 +254,7 @@ class StressOrchestrator:
         semaphore: asyncio.Semaphore,
         screenshot_manager: ScreenshotManager,
         metric_sink,
+        vision_client=None,
     ) -> None:
         if delay_seconds > 0:
             await asyncio.sleep(delay_seconds)
@@ -262,6 +275,8 @@ class StressOrchestrator:
                     state.uat_guidance.combined_context() if state.uat_guidance else ""
                 ),
                 target_url=state.effective_kamiwaza_url,
+                vision_client=vision_client,
+                scenario_weights=state.config.scenario_weights,
             )
             try:
                 await worker.run(

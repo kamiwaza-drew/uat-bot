@@ -1,0 +1,20 @@
+name: exploratory
+description: LLM-driven exploration — the vision model decides what to test next.
+timeout: 300
+required_role: viewer
+tags: [exploratory, vision]
+
+# This scenario is handled specially by the worker.
+# When picked, the worker enters exploratory mode where the vision LLM
+# drives navigation decisions. Steps below are just the initial seed.
+
+steps:
+  - action: navigate
+    url: /
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "The Kamiwaza home page or dashboard is displayed"
+
+  - action: screenshot
+    screenshot_name: exploration_start

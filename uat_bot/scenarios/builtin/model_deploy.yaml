@@ -1,0 +1,48 @@
+name: model_deploy
+description: Navigate to a model, attempt deployment, monitor status.
+timeout: 300
+required_role: editor
+tags: [models, serving, write]
+
+steps:
+  - action: navigate
+    url: /models
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+
+  - action: click
+    target: first_model_card
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: model_detail_pre_deploy
+
+  - action: click
+    target: deploy_button
+    timeout: 10
+    validate:
+      - vision: "A deployment configuration dialog or deployment initiation UI appeared"
+
+  - action: screenshot
+    screenshot_name: deploy_dialog
+
+  # Look for a confirm/submit button in the deploy dialog
+  - action: click
+    target: confirm_button
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: deploy_initiated
+
+  # Wait for deployment status to update
+  - action: wait_for
+    timeout: 60
+    poll_interval: 5
+    validate:
+      - vision_check: "Is the deployment status showing DEPLOYED, RUNNING, IN PROGRESS, or an error? Not still on the initial dialog."
+
+  - action: screenshot
+    screenshot_name: deploy_final_state
+    validate:
+      - no_errors: false  # Deployment errors are expected in test environments

@@ -1,0 +1,33 @@
+name: rbac_boundary
+description: Verify that viewers cannot access admin-only routes.
+timeout: 120
+required_role: viewer
+tags: [auth, rbac, security]
+
+steps:
+  - action: navigate
+    url: /cluster/home
+    wait_for: networkidle
+    validate:
+      - vision: "Access is denied, or the user was redirected away from the cluster admin page. The page should NOT show cluster management data."
+
+  - action: screenshot
+    screenshot_name: cluster_denied
+
+  - action: navigate
+    url: /cluster/users
+    wait_for: networkidle
+    validate:
+      - vision: "Access is denied or redirected. The page should NOT show a user management list."
+
+  - action: screenshot
+    screenshot_name: users_denied
+
+  - action: navigate
+    url: /activity
+    wait_for: networkidle
+    validate:
+      - vision: "Access is denied or redirected. The page should NOT show activity logs."
+
+  - action: screenshot
+    screenshot_name: activity_denied

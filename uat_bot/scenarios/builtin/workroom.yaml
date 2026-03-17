@@ -1,0 +1,27 @@
+name: workroom
+description: Browse workrooms, enter one if available.
+timeout: 120
+required_role: editor
+tags: [workroom, collaboration]
+
+steps:
+  - action: navigate
+    url: /
+    wait_for: networkidle
+
+  - action: click
+    target: sidebar_workrooms
+    timeout: 10
+    validate:
+      - vision: "A workroom list or workroom management page is displayed"
+
+  - action: screenshot
+    screenshot_name: workroom_list
+
+  - action: scroll
+    direction: down
+    validate:
+      - no_errors: true
+
+  - action: screenshot
+    screenshot_name: workroom_scrolled

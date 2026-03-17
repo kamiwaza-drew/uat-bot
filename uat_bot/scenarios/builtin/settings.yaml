@@ -1,0 +1,24 @@
+name: settings
+description: Navigate to user settings page and verify it loads.
+timeout: 60
+required_role: viewer
+tags: [settings, read, smoke]
+
+steps:
+  - action: navigate
+    url: /settings
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "A user settings or preferences page is displayed"
+
+  - action: screenshot
+    screenshot_name: settings_page
+
+  - action: scroll
+    direction: down
+    validate:
+      - no_errors: true
+
+  - action: screenshot
+    screenshot_name: settings_scrolled

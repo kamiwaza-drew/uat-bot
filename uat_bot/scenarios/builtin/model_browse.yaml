@@ -1,0 +1,47 @@
+name: model_browse
+description: Browse models list, search, view details, and navigate back.
+timeout: 180
+required_role: viewer
+tags: [models, read, smoke]
+
+steps:
+  - action: navigate
+    url: /models
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "A page showing AI models is displayed — either a grid or list of model cards"
+
+  - action: screenshot
+    screenshot_name: models_list
+
+  - action: scroll
+    direction: down
+    validate:
+      - no_errors: true
+
+  - action: scroll
+    direction: down
+
+  - action: scroll
+    direction: up
+
+  - action: click
+    target: first_model_card
+    timeout: 10
+    validate:
+      - vision: "A model detail page is showing with model information such as name, size, or format"
+
+  - action: screenshot
+    screenshot_name: model_detail
+
+  - action: scroll
+    direction: down
+    validate:
+      - no_errors: true
+
+  - action: navigate
+    url: /models
+    wait_for: networkidle
+    validate:
+      - no_errors: true

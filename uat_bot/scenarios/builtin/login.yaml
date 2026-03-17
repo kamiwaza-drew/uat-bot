@@ -1,14 +1,33 @@
 name: login
-description: Basic login flow to prove credentials and browser launch.
+description: Basic login flow — credentials, consent gate, and dashboard verification.
 timeout: 120
 required_role: viewer
+tags: [auth, smoke]
+
 steps:
   - action: navigate
     url: /
     wait_for: domcontentloaded
+    validate:
+      - no_errors: true
+
   - action: fill
     target: username
+    # value auto-resolved from user context
+
   - action: fill
     target: password
+    # value auto-resolved from user context
+
   - action: click
     target: submit
+
+  - action: wait_for
+    wait_for: networkidle
+    timeout: 20
+
+  - action: screenshot
+    screenshot_name: post_login
+    validate:
+      - no_errors: true
+      - vision: "The user is logged in and seeing a dashboard or home page, not a login screen"

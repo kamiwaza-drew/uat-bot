@@ -1,0 +1,54 @@
+name: cluster_admin
+description: Browse cluster admin pages — nodes, hardware, locations.
+timeout: 180
+required_role: admin
+tags: [cluster, admin, read]
+
+steps:
+  - action: navigate
+    url: /cluster/home
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "A cluster dashboard or overview page is displayed"
+
+  - action: screenshot
+    screenshot_name: cluster_home
+
+  - action: navigate
+    url: /cluster/nodes
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "A list of cluster nodes is shown"
+
+  - action: screenshot
+    screenshot_name: cluster_nodes
+
+  - action: navigate
+    url: /cluster/hardware
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+
+  - action: screenshot
+    screenshot_name: cluster_hardware
+
+  - action: navigate
+    url: /cluster/locations
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+
+  - action: screenshot
+    screenshot_name: cluster_locations
+
+  - action: navigate
+    url: /cluster/users
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "A user management page showing a list of users"
+
+  - action: screenshot
+    screenshot_name: cluster_users

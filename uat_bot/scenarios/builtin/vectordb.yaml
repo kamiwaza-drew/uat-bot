@@ -1,0 +1,30 @@
+name: vectordb
+description: Browse vector database instances and details.
+timeout: 120
+required_role: viewer
+tags: [vectordb, read]
+
+steps:
+  - action: navigate
+    url: /vectordbs
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "A vector database list page is showing"
+
+  - action: screenshot
+    screenshot_name: vectordb_list
+
+  - action: scroll
+    direction: down
+    validate:
+      - no_errors: true
+
+  - action: navigate
+    url: /vectordbs/home
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+
+  - action: screenshot
+    screenshot_name: vectordb_home

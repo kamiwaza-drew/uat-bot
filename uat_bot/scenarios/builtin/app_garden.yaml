@@ -1,0 +1,34 @@
+name: app_garden
+description: Browse App Garden templates, view details.
+timeout: 180
+required_role: viewer
+tags: [apps, read]
+
+steps:
+  - action: navigate
+    url: /apps
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+      - vision: "The App Garden page is showing, with app cards or a template list"
+
+  - action: screenshot
+    screenshot_name: app_garden_list
+
+  - action: scroll
+    direction: down
+
+  - action: click
+    target: first_app_card
+    timeout: 10
+    validate:
+      - vision: "An app detail view or deployment dialog is showing"
+
+  - action: screenshot
+    screenshot_name: app_detail
+
+  - action: navigate
+    url: /apps
+    wait_for: networkidle
+    validate:
+      - no_errors: true

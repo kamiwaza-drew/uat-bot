@@ -13,6 +13,7 @@ def test_root_route_serves_ui():
         response = client.get("/")
         assert response.status_code == 200
         assert "UAT Bot Control Center" in response.text
+        assert "Scenario Paths" in response.text
 
 
 def test_meta_contains_root_endpoint():

@@ -156,14 +156,37 @@ class StressOrchestrator:
                 },
             )
 
-            users = await self.user_manager.provision_test_users(
-                run_id=state.run_id,
-                count=state.config.concurrent_users,
-                role_distribution=state.config.role_distribution,
-                runtime_config=runtime_cfg,
-            )
-            state.users = users
-            await state.emit("run.users_provisioned", {"count": len(users)})
+            if state.config.skip_user_provisioning:
+                # Use admin credentials directly — no API user provisioning
+                from uat_bot.models import TestUser
+
+                admin_user = runtime_cfg.admin_user or "admin"
+                admin_password = runtime_cfg.admin_password or ""
+                roles = self.user_manager._build_role_list(state.config.role_distribution)
+                users = []
+                for idx, role in enumerate(roles, start=1):
+                    users.append(
+                        TestUser(
+                            username=admin_user,
+                            password=admin_password,
+                            role=role,
+                            user_id=f"direct-{idx}",
+                        )
+                    )
+                state.users = users
+                await state.emit(
+                    "run.users_provisioned",
+                    {"count": len(users), "mode": "direct_credentials"},
+                )
+            else:
+                users = await self.user_manager.provision_test_users(
+                    run_id=state.run_id,
+                    count=state.config.concurrent_users,
+                    role_distribution=state.config.role_distribution,
+                    runtime_config=runtime_cfg,
+                )
+                state.users = users
+                await state.emit("run.users_provisioned", {"count": len(users)})
 
             assignments = self.planner.assign(
                 users=users,
@@ -225,10 +248,11 @@ class StressOrchestrator:
             state.errors.append(str(exc))
             await state.emit("run.error", {"error": str(exc)})
         finally:
-            try:
-                await self.user_manager.cleanup_test_users(state.users, runtime_config=runtime_cfg)
-            except Exception as cleanup_exc:  # noqa: BLE001
-                state.errors.append(f"cleanup error: {cleanup_exc}")
+            if not state.config.skip_user_provisioning:
+                try:
+                    await self.user_manager.cleanup_test_users(state.users, runtime_config=runtime_cfg)
+                except Exception as cleanup_exc:  # noqa: BLE001
+                    state.errors.append(f"cleanup error: {cleanup_exc}")
 
             try:
                 state.report_path = await self.reporter.generate(state.run_id, state.root_dir)
@@ -263,6 +287,12 @@ class StressOrchestrator:
             if state.cancelled:
                 return
 
+            # Use extension_url as the target when set (e.g., Kaizen app URL)
+            effective_target = (
+                state.config.extension_url
+                or state.effective_kamiwaza_url
+            )
+
             worker = Worker(
                 run_id=state.run_id,
                 assignment=assignment,
@@ -274,9 +304,11 @@ class StressOrchestrator:
                 guidance_context=(
                     state.uat_guidance.combined_context() if state.uat_guidance else ""
                 ),
-                target_url=state.effective_kamiwaza_url,
+                target_url=effective_target,
                 vision_client=vision_client,
                 scenario_weights=state.config.scenario_weights,
+                single_iteration=state.config.single_iteration,
+                test_message=state.config.test_message,
             )
             try:
                 await worker.run(
@@ -300,9 +332,16 @@ class StressOrchestrator:
                 state.progress_pct = round((done / total) * 100.0, 2)
 
     def _summary(self, state: RunState) -> RunSummary:
+        # Determine test type from config
+        test_type = "kamiwaza"
+        scenarios = state.config.scenarios or []
+        if any(s.startswith("kaizen") for s in scenarios) or state.config.extension_url:
+            test_type = "kaizen"
+
         return RunSummary(
             run_id=state.run_id,
             status=state.status,
+            test_type=test_type,
             created_at=state.created_at,
             started_at=state.started_at,
             ended_at=state.ended_at,

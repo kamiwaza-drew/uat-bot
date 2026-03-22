@@ -71,6 +71,11 @@ Open `http://localhost:18090/` for the control center:
 - Configure Kamiwaza URL/admin credentials per run (optional), with env fallback
 - If admin user/password are missing in both UI and env, defaults are `admin` / `kamiwaza`
 - Note: some deployments require an admin token/PAT for user provisioning even if UI password login works.
+- Configure scenario paths via checkboxes:
+  - `Model Download / Deployment` -> `model_browse`, `model_deploy`
+  - `App & Tool Deployment` -> `app_deploy`, `app_garden`, `vectordb`
+  - `Add / Remove Users (Admin Path)` -> `cluster_admin`, `rbac_boundary`
+- Add manual scenarios in the `Additional Scenarios` field (merged with selected path scenarios)
 - Monitor run list/status in real time
 - Click a run ID to open that run's report
 - Delete old runs directly from the Runs table (purges all artifacts for that run)

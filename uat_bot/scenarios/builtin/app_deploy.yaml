@@ -1,0 +1,42 @@
+name: app_deploy
+description: Open app garden and attempt an app deployment flow.
+timeout: 300
+required_role: editor
+tags: [apps, deploy, write]
+
+steps:
+  - action: navigate
+    url: /apps
+    wait_for: networkidle
+    validate:
+      - no_errors: true
+
+  - action: screenshot
+    screenshot_name: app_list_pre_deploy
+
+  - action: click
+    target: deploy_button
+    timeout: 10
+    validate:
+      - vision: "A deployment dialog, wizard, or deployment confirmation UI appeared"
+
+  - action: screenshot
+    screenshot_name: app_deploy_dialog
+
+  - action: click
+    target: confirm_button
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: app_deploy_initiated
+
+  - action: wait_for
+    timeout: 60
+    poll_interval: 5
+    validate:
+      - vision_check: "Is deployment now in progress, completed, or showing an explicit error state?"
+
+  - action: screenshot
+    screenshot_name: app_deploy_final_state
+    validate:
+      - no_errors: false

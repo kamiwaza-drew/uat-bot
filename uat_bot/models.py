@@ -27,10 +27,14 @@ class RunCreateRequest(BaseModel):
     kamiwaza_admin_user: str | None = None
     kamiwaza_admin_password: str | None = None
     kamiwaza_admin_token: str | None = None
+    extension_url: str | None = None
+    skip_user_provisioning: bool = False
+    single_iteration: bool = False
     duration_seconds: int = Field(default=120, ge=10, le=86_400)
     ramp_up_seconds: int = Field(default=0, ge=0, le=3_600)
     vision_enabled: bool = False
     exploratory_pct: float = Field(default=0.0, ge=0.0, le=1.0)
+    test_message: str | None = None
 
     @model_validator(mode="after")
     def validate_distributions(self) -> "RunCreateRequest":
@@ -50,6 +54,7 @@ class RunCreateRequest(BaseModel):
 class RunSummary(BaseModel):
     run_id: str
     status: RunStatus
+    test_type: str = "kamiwaza"
     created_at: datetime
     started_at: datetime | None = None
     ended_at: datetime | None = None
@@ -114,3 +119,27 @@ class WorkerAssignment(BaseModel):
     browser: str
     os_profile: str
     scenarios: list[str]
+
+
+class ScenarioGenerateRequest(BaseModel):
+    prompt: str
+    name: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class ScenarioGenerateResponse(BaseModel):
+    yaml_content: str
+    name: str
+    errors: list[str] = Field(default_factory=list)
+    backend_used: str
+
+
+class ScenarioSaveRequest(BaseModel):
+    name: str
+    yaml_content: str
+
+
+class ScenarioSaveResponse(BaseModel):
+    saved: bool
+    path: str | None = None
+    errors: list[str] = Field(default_factory=list)

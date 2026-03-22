@@ -159,9 +159,14 @@ class ScenarioRunner:
 
         duration_ms = int((perf_counter() - ts_start) * 1000)
 
-        # Take screenshot (named or auto)
-        shot_name = step.screenshot_name or step.action
-        shot = await self._capture(shot_name)
+        # Take screenshots for explicit screenshot steps, named steps, and
+        # key interaction actions (fill, click, navigate, hover, js_eval).
+        # Skip auto-capture for wait_for, wait_for_url, sleep, scroll.
+        shot = None
+        _auto_capture_actions = {"screenshot", "fill", "click", "navigate", "hover", "js_eval"}
+        if step.screenshot_name or step.action in _auto_capture_actions:
+            shot_name = step.screenshot_name or step.action
+            shot = await self._capture(shot_name)
 
         # Run validations
         validation_failures = []
@@ -225,6 +230,12 @@ class ScenarioRunner:
             await actions.click(self.page, step.target, timeout=step.timeout)
             return f"clicked {step.target}"
 
+        if step.action == "hover":
+            if not step.target:
+                raise Error("hover action requires a target")
+            await actions.hover(self.page, step.target, timeout=step.timeout)
+            return f"hovered {step.target}"
+
         if step.action == "fill":
             if not step.target:
                 raise Error("fill action requires a target")
@@ -262,6 +273,26 @@ class ScenarioRunner:
             # Fallback: just wait
             await asyncio.sleep(step.timeout)
             return f"waited {step.timeout}s (no condition)"
+
+        if step.action == "wait_for_url":
+            pattern = step.value or step.url or ""
+            if not pattern:
+                raise Error("wait_for_url requires a value or url pattern")
+            await self.page.wait_for_url(
+                lambda url, p=pattern: p in url,
+                timeout=step.timeout * 1000,
+            )
+            return f"URL matched pattern: {pattern}"
+
+        if step.action == "js_eval":
+            expression = self._resolve_value(step)
+            if not expression:
+                raise Error("js_eval action requires a value with the JS expression")
+            result = await self.page.evaluate(expression)
+            result_str = str(result)[:500]
+            if result_str.startswith("ERROR:"):
+                raise Error(f"js_eval error: {result_str}")
+            return f"js_eval returned: {result_str}"
 
         if step.action == "screenshot":
             return "screenshot captured"

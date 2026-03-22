@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from uat_bot.api.builder import router as builder_router
 from uat_bot.api.live import router as live_router
 from uat_bot.api.runs import router as runs_router
 from uat_bot.api.uat import router as uat_router
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
 
     settings.uat_data_dir.mkdir(parents=True, exist_ok=True)
     (settings.uat_data_dir / "runs").mkdir(parents=True, exist_ok=True)
+    (settings.uat_data_dir / "scenarios").mkdir(parents=True, exist_ok=True)
 
     await orchestrator.user_manager.cleanup_orphaned_users()
 
@@ -59,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(runs_router)
     app.include_router(live_router)
     app.include_router(uat_router)
+    app.include_router(builder_router)
     app.include_router(ui_router)
 
     return app

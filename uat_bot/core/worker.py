@@ -33,6 +33,8 @@ class Worker:
         target_url: str | None = None,
         vision_client: Any | None = None,
         scenario_weights: dict[str, int] | None = None,
+        single_iteration: bool = False,
+        test_message: str | None = None,
     ) -> None:
         self.run_id = run_id
         self.assignment = assignment
@@ -45,6 +47,8 @@ class Worker:
         self.target_url = (target_url or settings.kamiwaza_url or "").rstrip("/")
         self.vision_client = vision_client
         self.scenario_weights = scenario_weights or {}
+        self.single_iteration = single_iteration
+        self.test_message = test_message or ""
         self._step = 0
         self.effective_browser = assignment.browser
 
@@ -60,6 +64,7 @@ class Worker:
             "browser": self.effective_browser,
             "os_profile": self.assignment.os_profile,
             "component": self.component or "",
+            "test_message": self.test_message,
         }
 
     async def run(self, duration_seconds: int, cancel_event: asyncio.Event) -> None:
@@ -146,6 +151,10 @@ class Worker:
                                 "detail": f"scenario {scenario.name} timed out",
                             }
                         )
+
+                    # In single_iteration mode, stop after one scenario pass
+                    if self.single_iteration:
+                        break
 
                     # Think time between scenarios (simulate human)
                     if not cancel_event.is_set():
@@ -381,10 +390,40 @@ class Worker:
         else:
             await page.keyboard.press("Enter")
 
+        # Detect Keycloak redirect (ForwardAuth sends to /realms/...)
+        is_keycloak = "/realms/" in page.url
+        if is_keycloak:
+            await self.metric_sink(
+                {
+                    **self._user_context,
+                    "run_id": self.run_id,
+                    "worker_id": self.assignment.worker_id,
+                    "action": "keycloak_redirect",
+                    "status": "ok",
+                    "duration_ms": int((perf_counter() - ts_start) * 1000),
+                    "detail": f"Keycloak login page detected: {page.url}",
+                }
+            )
+
         try:
             await page.wait_for_load_state("networkidle", timeout=20_000)
         except Error:
             pass
+
+        # If Keycloak login, wait for redirect back to the extension/app URL
+        if is_keycloak:
+            try:
+                await page.wait_for_url(
+                    lambda url: "/realms/" not in url,
+                    timeout=30_000,
+                )
+            except Error:
+                pass  # May already be redirected
+
+            try:
+                await page.wait_for_load_state("networkidle", timeout=20_000)
+            except Error:
+                pass
 
         post_shot = await self.screenshot_manager.capture(
             page,
@@ -393,6 +432,9 @@ class Worker:
             "after_login",
             full_page=True,
         )
+        login_detail = "login submitted"
+        if is_keycloak:
+            login_detail = f"Keycloak login completed, redirected to {page.url}"
         await self.metric_sink(
             {
                 **self._user_context,
@@ -402,7 +444,7 @@ class Worker:
                 "status": "ok",
                 "duration_ms": int((perf_counter() - ts_start) * 1000),
                 "screenshot": post_shot.name,
-                "detail": "login submitted",
+                "detail": login_detail,
             }
         )
 

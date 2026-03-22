@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     uat_vision_model_complex: str = Field(default="claude-opus-4-6", alias="UAT_VISION_MODEL_COMPLEX")
     uat_max_workers: int = Field(default=20, alias="UAT_MAX_WORKERS")
     uat_screenshot_quality: str = Field(default="png", alias="UAT_SCREENSHOT_QUALITY")
+    uat_extension_url: str | None = Field(default=None, alias="UAT_EXTENSION_URL")
     uat_extension_roots: str = Field(
         default="/home/ec2-user/k8s/kamiwaza-extensions-*",
         alias="UAT_EXTENSION_ROOTS",

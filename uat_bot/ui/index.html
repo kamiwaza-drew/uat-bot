@@ -258,7 +258,7 @@
     .shots {
       margin-top: 12px;
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
       gap: 10px;
     }
 
@@ -269,6 +269,12 @@
       background: #fff;
       text-decoration: none;
       color: inherit;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .shot:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(0,0,0,0.12);
     }
 
     .shot img {
@@ -286,11 +292,164 @@
       color: var(--muted);
     }
 
+    /* Lightbox gallery overlay */
+    .lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(0,0,0,0.88);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img {
+      max-width: 92vw;
+      max-height: 80vh;
+      border-radius: 8px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+    }
+    .lightbox .lb-caption {
+      color: #ccc;
+      font-size: 13px;
+      margin-top: 10px;
+      text-align: center;
+    }
+    .lightbox .lb-counter {
+      color: #888;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    .lightbox .lb-nav {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(255,255,255,0.15);
+      border: none;
+      color: #fff;
+      font-size: 32px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+    .lightbox .lb-nav:hover { background: rgba(255,255,255,0.3); }
+    .lightbox .lb-prev { left: 16px; }
+    .lightbox .lb-next { right: 16px; }
+    .lightbox .lb-close {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: rgba(255,255,255,0.15);
+      border: none;
+      color: #fff;
+      font-size: 24px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .lightbox .lb-close:hover { background: rgba(255,255,255,0.3); }
+
+    .type-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+    .type-badge.kaizen {
+      background: #0e7a6320;
+      color: var(--brand);
+    }
+    .type-badge.kamiwaza {
+      background: #3b82f620;
+      color: #2563eb;
+    }
+
     .message {
       margin-top: 8px;
       font-size: 12px;
       min-height: 18px;
     }
+
+    .path-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .path-item {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfefd;
+      margin-bottom: 0;
+    }
+    .path-item input[type="checkbox"] {
+      width: auto;
+      margin-top: 2px;
+      flex: 0 0 auto;
+    }
+    .path-title {
+      font-size: 13px;
+      color: var(--ink);
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .path-desc {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .path-preview {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .mode-toggle {
+      display: flex;
+      gap: 0;
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .mode-toggle button {
+      flex: 1;
+      padding: 10px 12px;
+      border: none;
+      border-radius: 0;
+      background: #f9fcfb;
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .mode-toggle button.active {
+      background: var(--brand);
+      color: #fff;
+    }
+    .mode-toggle button:not(.active):hover {
+      background: #eef3f2;
+    }
+    .mode-panel { display: none; }
+    .mode-panel.active { display: block; }
 
     .err { color: var(--err); }
     .ok { color: var(--ok); }
@@ -320,6 +479,61 @@
     </div>
 
     <section class="card">
+      <div class="mode-toggle">
+        <button id="mode-kaizen" class="active">Kaizen Test</button>
+        <button id="mode-stress">Stress Test</button>
+        <button id="mode-builder">UAT Builder</button>
+      </div>
+
+      <!-- Kaizen Test Mode Panel -->
+      <div id="panel-kaizen" class="mode-panel active">
+        <h2 class="section-title">Kaizen Test</h2>
+
+        <div style="margin-bottom:10px;">
+          <label for="kaizen-extension-url">Extension URL</label>
+          <input id="kaizen-extension-url" placeholder="https://test.kamiwaza.dev/runtime/apps/kaizen-xxx/" />
+        </div>
+
+        <div class="grid2">
+          <div>
+            <label for="kaizen-username">Username</label>
+            <input id="kaizen-username" value="admin" placeholder="admin" />
+          </div>
+          <div>
+            <label for="kaizen-password">Password</label>
+            <input id="kaizen-password" type="password" value="kamiwaza" placeholder="password" />
+          </div>
+        </div>
+
+        <div style="margin-top:10px;">
+          <label for="kaizen-message">Test Message</label>
+          <input id="kaizen-message" value="Create a simple hello world Python script" />
+        </div>
+
+        <div class="grid2" style="margin-top:10px;">
+          <div>
+            <label for="kaizen-timeout">Response Timeout (seconds)</label>
+            <input id="kaizen-timeout" type="number" min="30" value="120" />
+          </div>
+          <div>
+            <label for="kaizen-duration">Total Duration (seconds)</label>
+            <input id="kaizen-duration" type="number" min="10" value="300" />
+          </div>
+        </div>
+
+        <div style="margin-top:10px;">
+          <label><input id="kaizen-vision" type="checkbox" /> Vision Enabled</label>
+        </div>
+
+        <div class="actions">
+          <button class="btn-primary" id="kaizen-run">Run Test</button>
+          <button class="btn-secondary" id="refresh-runs-kaizen">Refresh Runs</button>
+        </div>
+        <div class="message" id="kaizen-message-status"></div>
+      </div>
+
+      <!-- Stress Test Mode Panel -->
+      <div id="panel-stress" class="mode-panel">
       <h2 class="section-title">Start Run</h2>
 
       <div class="grid2">
@@ -401,7 +615,35 @@
       </div>
 
       <div style="margin-top:10px;">
-        <label for="scenarios">Scenarios (comma separated)</label>
+        <label>Scenario Paths</label>
+        <div class="path-grid">
+          <label class="path-item">
+            <input id="path-model-deploy" type="checkbox" />
+            <span>
+              <div class="path-title">Model Download / Deployment</div>
+              <div class="path-desc">Runs model browsing + deploy flows.</div>
+            </span>
+          </label>
+          <label class="path-item">
+            <input id="path-app-tool-deploy" type="checkbox" />
+            <span>
+              <div class="path-title">App &amp; Tool Deployment</div>
+              <div class="path-desc">Runs app deploy + app garden + vector DB flows.</div>
+            </span>
+          </label>
+          <label class="path-item">
+            <input id="path-user-admin" type="checkbox" />
+            <span>
+              <div class="path-title">Add / Remove Users (Admin Path)</div>
+              <div class="path-desc">Runs cluster admin + RBAC boundary user-management checks.</div>
+            </span>
+          </label>
+        </div>
+        <div class="path-preview" id="path-scenarios-preview"></div>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="scenarios">Additional Scenarios (comma separated, optional)</label>
         <input id="scenarios" value="login" />
       </div>
 
@@ -419,6 +661,58 @@
         <button class="btn-secondary" id="refresh-runs">Refresh Runs</button>
       </div>
       <div class="message" id="start-message"></div>
+      </div><!-- end panel-stress -->
+
+      <!-- UAT Builder Panel -->
+      <div id="panel-builder" class="mode-panel">
+        <h2 class="section-title">UAT Builder</h2>
+        <div class="pill" id="builder-backend-badge" style="margin-bottom:12px;">Backend: detecting...</div>
+
+        <div style="margin-bottom:10px;">
+          <label for="builder-prompt">Describe what you want to test</label>
+          <textarea id="builder-prompt" rows="3" placeholder="e.g., Test that the settings page loads, all tabs are clickable, and no errors appear"></textarea>
+        </div>
+
+        <div class="grid2">
+          <div>
+            <label for="builder-name">Scenario Name (optional)</label>
+            <input id="builder-name" placeholder="my_settings_test" />
+          </div>
+          <div>
+            <label for="builder-tags">Tags (comma separated, optional)</label>
+            <input id="builder-tags" placeholder="settings, smoke" />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn-primary" id="builder-generate">Generate Scenario</button>
+        </div>
+        <div class="message" id="builder-message"></div>
+
+        <div id="builder-editor-section" style="display:none; margin-top:14px;">
+          <label for="builder-yaml">Generated YAML (editable)</label>
+          <textarea id="builder-yaml" rows="16" style="font-family:monospace; font-size:12px; min-height:200px;"></textarea>
+
+          <div class="grid2" style="margin-top:8px;">
+            <div>
+              <label for="builder-save-name">Save As</label>
+              <input id="builder-save-name" placeholder="scenario_name" />
+            </div>
+            <div style="display:flex; align-items:flex-end; gap:8px;">
+              <button class="btn-primary" id="builder-save">Save Scenario</button>
+              <button class="btn-secondary" id="builder-save-run">Save &amp; Run</button>
+            </div>
+          </div>
+          <div class="message" id="builder-save-message"></div>
+        </div>
+
+        <div style="margin-top:18px;">
+          <h2 class="section-title">Saved Custom Scenarios</h2>
+          <div id="builder-scenario-list" class="path-grid">
+            <div class="sub">No custom scenarios yet.</div>
+          </div>
+        </div>
+      </div><!-- end panel-builder -->
     </section>
 
     <div class="main-stack">
@@ -431,6 +725,7 @@
           <thead>
             <tr>
               <th>Run</th>
+              <th>Type</th>
               <th>Status</th>
               <th>Users</th>
               <th>Workers</th>
@@ -484,8 +779,34 @@
     </div>
   </div>
 
+  <!-- Lightbox gallery overlay -->
+  <div class="lightbox" id="lightbox">
+    <button class="lb-close" id="lb-close" aria-label="Close">&times;</button>
+    <button class="lb-nav lb-prev" id="lb-prev" aria-label="Previous">&#8249;</button>
+    <button class="lb-nav lb-next" id="lb-next" aria-label="Next">&#8250;</button>
+    <img id="lb-img" src="" alt="Screenshot" />
+    <div class="lb-caption" id="lb-caption"></div>
+    <div class="lb-counter" id="lb-counter"></div>
+  </div>
+
   <script>
+    let currentMode = "kaizen"; // "kaizen" or "stress"
+
     const profiles = {
+      kaizen: {
+        concurrent_users: 1,
+        role_distribution: { admin: 1 },
+        browser_distribution: { chromium: 1 },
+        os_emulation: ["win-chrome"],
+        scenarios: ["kaizen_chat"],
+        scenario_weights: { kaizen_chat: 1 },
+        duration_seconds: 300,
+        ramp_up_seconds: 0,
+        vision_enabled: false,
+        exploratory_pct: 0,
+        skip_user_provisioning: true,
+        single_iteration: true,
+      },
       smoke: {
         concurrent_users: 3,
         role_distribution: { admin: 1, editor: 1, viewer: 1 },
@@ -528,6 +849,22 @@
     let ws = null;
     let refreshTimer = null;
     const shots = new Map();
+    const SCENARIO_PATHS = {
+      model_deploy: {
+        scenarios: ["model_browse", "model_deploy"],
+      },
+      app_tool_deploy: {
+        scenarios: ["app_deploy", "app_garden", "vectordb"],
+      },
+      user_admin: {
+        scenarios: ["cluster_admin", "rbac_boundary"],
+      },
+    };
+    const PATH_INPUTS = {
+      model_deploy: "path-model-deploy",
+      app_tool_deploy: "path-app-tool-deploy",
+      user_admin: "path-user-admin",
+    };
 
     const el = (id) => document.getElementById(id);
 
@@ -582,11 +919,63 @@
       return (arr || []).join(",");
     }
 
+    function uniqList(items) {
+      const out = [];
+      const seen = new Set();
+      (items || []).forEach((item) => {
+        if (!item || seen.has(item)) {
+          return;
+        }
+        seen.add(item);
+        out.push(item);
+      });
+      return out;
+    }
+
     function csvToList(value) {
       return String(value || "")
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean);
+    }
+
+    function selectedPathScenarios() {
+      const combined = [];
+      Object.entries(PATH_INPUTS).forEach(([pathKey, inputId]) => {
+        if (el(inputId).checked) {
+          combined.push(...(SCENARIO_PATHS[pathKey]?.scenarios || []));
+        }
+      });
+      return uniqList(combined);
+    }
+
+    function inferSelectedPathsFromScenarios(scenarios) {
+      const selected = [];
+      const scenarioSet = new Set(scenarios || []);
+      Object.entries(SCENARIO_PATHS).forEach(([pathKey, pathCfg]) => {
+        const hasAny = (pathCfg.scenarios || []).some((name) => scenarioSet.has(name));
+        if (hasAny) {
+          selected.push(pathKey);
+        }
+      });
+      return selected;
+    }
+
+    function setSelectedPaths(pathKeys) {
+      const selected = new Set(pathKeys || []);
+      Object.entries(PATH_INPUTS).forEach(([pathKey, inputId]) => {
+        el(inputId).checked = selected.has(pathKey);
+      });
+      updatePathPreview();
+    }
+
+    function updatePathPreview() {
+      const pathScenarios = selectedPathScenarios();
+      if (pathScenarios.length === 0) {
+        el("path-scenarios-preview").textContent = "No path selected. Use Additional Scenarios or choose at least one path.";
+        return;
+      }
+      el("path-scenarios-preview").textContent = `Selected path scenarios: ${pathScenarios.join(", ")}`;
     }
 
     function applyProfile(name) {
@@ -603,6 +992,8 @@
       el("browser-firefox").value = p.browser_distribution.firefox || 0;
       el("browser-webkit").value = p.browser_distribution.webkit || 0;
       el("os").value = listToCsv(p.os_emulation);
+      const selectedPaths = p.path_selections || inferSelectedPathsFromScenarios(p.scenarios || []);
+      setSelectedPaths(selectedPaths);
       el("scenarios").value = listToCsv(p.scenarios);
       el("weights").value = JSON.stringify(p.scenario_weights || {}, null, 2);
       el("vision").checked = Boolean(p.vision_enabled);
@@ -621,6 +1012,13 @@
       select.addEventListener("change", () => applyProfile(select.value));
     }
 
+    function initScenarioPaths() {
+      Object.values(PATH_INPUTS).forEach((inputId) => {
+        el(inputId).addEventListener("change", updatePathPreview);
+      });
+      updatePathPreview();
+    }
+
     function safeJsonParse(text) {
       if (!text || !text.trim()) { return {}; }
       try { return JSON.parse(text); }
@@ -637,6 +1035,12 @@
     }
 
     function buildPayload() {
+      const selectedPathScenarioNames = selectedPathScenarios();
+      const additionalScenarioNames = csvToList(el("scenarios").value);
+      const combinedScenarios = uniqList([
+        ...selectedPathScenarioNames,
+        ...additionalScenarioNames,
+      ]);
       const payload = {
         concurrent_users: toInt("concurrent"),
         role_distribution: {
@@ -650,7 +1054,7 @@
           webkit: toInt("browser-webkit"),
         },
         os_emulation: csvToList(el("os").value),
-        scenarios: csvToList(el("scenarios").value),
+        scenarios: combinedScenarios,
         scenario_weights: safeJsonParse(el("weights").value),
         component: (el("component").value || "").trim() || null,
         kamiwaza_url: trimOrNull("kamiwaza-url"),
@@ -663,10 +1067,19 @@
         exploratory_pct: parseFloat(el("exploratory").value || "0"),
       };
 
+      // Pass through extension fields if profile has them
+      const currentProfile = profiles[el("profile").value];
+      if (currentProfile && currentProfile.skip_user_provisioning) {
+        payload.skip_user_provisioning = true;
+      }
+
       const roleSum = Object.values(payload.role_distribution).reduce((a, b) => a + b, 0);
       const browserSum = Object.values(payload.browser_distribution).reduce((a, b) => a + b, 0);
       if (payload.concurrent_users < 1) {
         throw new Error("Concurrent users must be at least 1.");
+      }
+      if (payload.scenarios.length < 1) {
+        throw new Error("Pick at least one scenario path or additional scenario.");
       }
       if (roleSum !== payload.concurrent_users) {
         throw new Error(`Role distribution total (${roleSum}) must equal concurrent users (${payload.concurrent_users}).`);
@@ -712,7 +1125,7 @@
       tbody.innerHTML = "";
 
       if (!Array.isArray(runs) || runs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6">No runs yet.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7">No runs yet.</td></tr>';
         return;
       }
 
@@ -720,8 +1133,10 @@
         const tr = document.createElement("tr");
         tr.className = "run-row";
         tr.setAttribute("data-run-select", run.run_id);
+        const testType = run.test_type || "kamiwaza";
         tr.innerHTML = `
           <td><a class="run-link" href="/runs/${run.run_id}/report" target="_blank" rel="noopener">${run.run_id.slice(0, 12)}</a></td>
+          <td><span class="type-badge ${testType}">${testType.charAt(0).toUpperCase() + testType.slice(1)}</span></td>
           <td>${statusBadge(run.status)}</td>
           <td>${run.concurrent_users}</td>
           <td>${run.completed_workers}/${run.concurrent_users}</td>
@@ -823,23 +1238,65 @@
       return lines.join("\n\n");
     }
 
+    let galleryItems = [];
+    let galleryIndex = 0;
+
     function renderShots() {
       const container = el("shots");
-      const items = Array.from(shots.values()).slice(-24).reverse();
+      galleryItems = Array.from(shots.values()).reverse();
       container.innerHTML = "";
-      if (items.length === 0) {
+      if (galleryItems.length === 0) {
         container.innerHTML = "<div class='sub'>Screenshots will appear here during a run.</div>";
         return;
       }
-      items.forEach((item) => {
-        const a = document.createElement("a");
-        a.href = item.url;
-        a.target = "_blank";
-        a.className = "shot";
-        a.innerHTML = `<img src="${item.url}" alt="${item.path}" /><div>${item.path}</div>`;
-        container.appendChild(a);
+      galleryItems.forEach((item, idx) => {
+        const div = document.createElement("div");
+        div.className = "shot";
+        div.setAttribute("data-gallery-idx", idx);
+        div.innerHTML = `<img src="${item.url}" alt="${item.path}" loading="lazy" /><div>${item.path}</div>`;
+        div.addEventListener("click", () => openGallery(idx));
+        container.appendChild(div);
       });
     }
+
+    function openGallery(idx) {
+      if (!galleryItems.length) return;
+      galleryIndex = idx;
+      updateGalleryView();
+      el("lightbox").classList.add("open");
+    }
+
+    function updateGalleryView() {
+      const item = galleryItems[galleryIndex];
+      if (!item) return;
+      el("lb-img").src = item.url;
+      el("lb-caption").textContent = item.path;
+      el("lb-counter").textContent = `${galleryIndex + 1} / ${galleryItems.length}`;
+      el("lb-prev").disabled = galleryIndex <= 0;
+      el("lb-next").disabled = galleryIndex >= galleryItems.length - 1;
+    }
+
+    function closeGallery() {
+      el("lightbox").classList.remove("open");
+    }
+
+    // Gallery navigation
+    el("lb-close").addEventListener("click", closeGallery);
+    el("lb-prev").addEventListener("click", () => {
+      if (galleryIndex > 0) { galleryIndex--; updateGalleryView(); }
+    });
+    el("lb-next").addEventListener("click", () => {
+      if (galleryIndex < galleryItems.length - 1) { galleryIndex++; updateGalleryView(); }
+    });
+    el("lightbox").addEventListener("click", (e) => {
+      if (e.target === el("lightbox")) closeGallery();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (!el("lightbox").classList.contains("open")) return;
+      if (e.key === "Escape") closeGallery();
+      if (e.key === "ArrowLeft" && galleryIndex > 0) { galleryIndex--; updateGalleryView(); }
+      if (e.key === "ArrowRight" && galleryIndex < galleryItems.length - 1) { galleryIndex++; updateGalleryView(); }
+    });
 
     function saveShot(path) {
       if (!activeRunId || !path) {
@@ -848,6 +1305,10 @@
       const url = `/runs/${activeRunId}/artifacts/${path}`;
       shots.set(path, { path, url, ts: Date.now() });
       renderShots();
+      // If gallery is open, update it to include new shot
+      if (el("lightbox").classList.contains("open")) {
+        updateGalleryView();
+      }
     }
 
     function connectLive() {
@@ -955,8 +1416,265 @@
       window.open(`/runs/${activeRunId}/report`, "_blank");
     }
 
+    function switchMode(mode) {
+      currentMode = mode;
+      ["kaizen", "stress", "builder"].forEach((m) => {
+        el(`panel-${m}`).classList.toggle("active", mode === m);
+        el(`mode-${m}`).classList.toggle("active", mode === m);
+      });
+    }
+
+    function buildKaizenPayload() {
+      const extensionUrl = (el("kaizen-extension-url").value || "").trim();
+      if (!extensionUrl) {
+        throw new Error("Extension URL is required for Kaizen test.");
+      }
+      const username = (el("kaizen-username").value || "").trim() || "admin";
+      const password = (el("kaizen-password").value || "").trim() || "kamiwaza";
+      const testMessage = (el("kaizen-message").value || "").trim();
+      return {
+        concurrent_users: 1,
+        role_distribution: { admin: 1 },
+        browser_distribution: { chromium: 1 },
+        os_emulation: ["win-chrome"],
+        scenarios: ["kaizen_chat"],
+        scenario_weights: { kaizen_chat: 1 },
+        duration_seconds: parseInt(el("kaizen-duration").value || "300", 10),
+        ramp_up_seconds: 0,
+        vision_enabled: el("kaizen-vision").checked,
+        exploratory_pct: 0,
+        extension_url: extensionUrl,
+        skip_user_provisioning: true,
+        single_iteration: true,
+        kamiwaza_url: extensionUrl,
+        kamiwaza_admin_user: username,
+        kamiwaza_admin_password: password,
+        test_message: testMessage || null,
+      };
+    }
+
+    function setKaizenMessage(text, cls = "") {
+      const node = el("kaizen-message-status");
+      node.textContent = text;
+      node.className = `message ${cls}`.trim();
+    }
+
+    async function startKaizenRun() {
+      try {
+        const payload = buildKaizenPayload();
+        setKaizenMessage("Starting Kaizen test...", "warn");
+        const res = await fetch("/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setKaizenMessage(data.detail || "Failed to start run.", "err");
+          return;
+        }
+        setKaizenMessage(`Run ${data.run_id} started.`, "ok");
+        activeRunId = data.run_id;
+        await refreshRuns();
+        await loadRunDetail();
+        connectLive();
+      } catch (err) {
+        setKaizenMessage(err.message || String(err), "err");
+      }
+    }
+
+    // ---- Builder functions ----
+
+    function setBuilderMessage(text, cls = "") {
+      const node = el("builder-message");
+      node.textContent = text;
+      node.className = `message ${cls}`.trim();
+    }
+
+    function setBuilderSaveMessage(text, cls = "") {
+      const node = el("builder-save-message");
+      node.textContent = text;
+      node.className = `message ${cls}`.trim();
+    }
+
+    async function detectBuilderBackend() {
+      try {
+        const res = await fetch("/builder/backends");
+        const data = await res.json();
+        const badge = el("builder-backend-badge");
+        if (data.active) {
+          badge.innerHTML = `<span class="dot"></span> Backend: ${data.active}`;
+        } else {
+          badge.textContent = "No LLM backend available";
+          badge.style.color = "var(--err)";
+        }
+      } catch {
+        el("builder-backend-badge").textContent = "Backend: error detecting";
+      }
+    }
+
+    async function generateScenario() {
+      const prompt = (el("builder-prompt").value || "").trim();
+      if (!prompt) {
+        setBuilderMessage("Please describe what you want to test.", "warn");
+        return;
+      }
+
+      const name = (el("builder-name").value || "").trim() || null;
+      const tagsRaw = (el("builder-tags").value || "").trim();
+      const tags = tagsRaw ? csvToList(tagsRaw) : [];
+
+      setBuilderMessage("Generating scenario... (this may take 30-60s)", "warn");
+      el("builder-generate").disabled = true;
+
+      try {
+        const res = await fetch("/builder/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, name, tags }),
+        });
+        const data = await res.json();
+
+        if (data.errors && data.errors.length > 0) {
+          setBuilderMessage(`Warnings: ${data.errors.join("; ")}`, data.yaml_content ? "warn" : "err");
+        } else {
+          setBuilderMessage(`Scenario generated via ${data.backend_used}.`, "ok");
+        }
+
+        if (data.yaml_content) {
+          el("builder-yaml").value = data.yaml_content;
+          el("builder-save-name").value = data.name || name || "";
+          el("builder-editor-section").style.display = "block";
+        }
+      } catch (err) {
+        setBuilderMessage(`Error: ${err.message || String(err)}`, "err");
+      } finally {
+        el("builder-generate").disabled = false;
+      }
+    }
+
+    async function saveScenario() {
+      const yamlContent = (el("builder-yaml").value || "").trim();
+      const name = (el("builder-save-name").value || "").trim();
+      if (!name) {
+        setBuilderSaveMessage("Name is required.", "warn");
+        return;
+      }
+      if (!yamlContent) {
+        setBuilderSaveMessage("YAML content is empty.", "warn");
+        return;
+      }
+
+      try {
+        const res = await fetch("/builder/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, yaml_content: yamlContent }),
+        });
+        const data = await res.json();
+
+        if (data.saved) {
+          setBuilderSaveMessage(`Saved to ${data.path}`, "ok");
+          await refreshBuilderScenarios();
+        } else {
+          setBuilderSaveMessage(`Save failed: ${(data.errors || []).join("; ")}`, "err");
+        }
+        return data.saved;
+      } catch (err) {
+        setBuilderSaveMessage(`Error: ${err.message || String(err)}`, "err");
+        return false;
+      }
+    }
+
+    async function saveAndRunScenario() {
+      const saved = await saveScenario();
+      if (!saved) return;
+
+      const name = (el("builder-save-name").value || "").trim();
+      try {
+        const payload = {
+          concurrent_users: 1,
+          role_distribution: { admin: 1 },
+          browser_distribution: { chromium: 1 },
+          os_emulation: ["win-chrome"],
+          scenarios: [name],
+          scenario_weights: {},
+          duration_seconds: 300,
+          ramp_up_seconds: 0,
+          vision_enabled: false,
+          exploratory_pct: 0,
+          single_iteration: true,
+        };
+
+        setBuilderSaveMessage("Starting run...", "warn");
+        const res = await fetch("/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setBuilderSaveMessage(data.detail || "Failed to start run.", "err");
+          return;
+        }
+        setBuilderSaveMessage(`Run ${data.run_id} started.`, "ok");
+        activeRunId = data.run_id;
+        await refreshRuns();
+        await loadRunDetail();
+        connectLive();
+      } catch (err) {
+        setBuilderSaveMessage(`Error: ${err.message || String(err)}`, "err");
+      }
+    }
+
+    async function refreshBuilderScenarios() {
+      try {
+        const res = await fetch("/builder/scenarios");
+        const data = await res.json();
+        const container = el("builder-scenario-list");
+
+        if (!data.scenarios || data.scenarios.length === 0) {
+          container.innerHTML = '<div class="sub">No custom scenarios yet.</div>';
+          return;
+        }
+
+        container.innerHTML = "";
+        data.scenarios.forEach((s) => {
+          const div = document.createElement("div");
+          div.className = "path-item";
+          div.innerHTML = `
+            <span>
+              <div class="path-title">${escapeHtml(s.name)}</div>
+              <div class="path-desc">${escapeHtml(s.description)} (${s.step_count} steps)</div>
+              <div class="path-desc" style="font-size:11px;color:var(--muted);">${escapeHtml((s.tags || []).join(", "))}</div>
+            </span>
+          `;
+          container.appendChild(div);
+        });
+      } catch {
+        // Silently fail
+      }
+    }
+
     async function bootstrap() {
+      // Mode toggle
+      el("mode-kaizen").addEventListener("click", () => switchMode("kaizen"));
+      el("mode-stress").addEventListener("click", () => switchMode("stress"));
+      el("mode-builder").addEventListener("click", () => switchMode("builder"));
+
+      // Builder mode
+      el("builder-generate").addEventListener("click", generateScenario);
+      el("builder-save").addEventListener("click", saveScenario);
+      el("builder-save-run").addEventListener("click", saveAndRunScenario);
+      detectBuilderBackend();
+      refreshBuilderScenarios();
+
+      // Kaizen mode
+      el("kaizen-run").addEventListener("click", startKaizenRun);
+      el("refresh-runs-kaizen").addEventListener("click", refreshRuns);
+
       initProfiles();
+      initScenarioPaths();
       el("start-run").addEventListener("click", startRun);
       el("refresh-runs").addEventListener("click", refreshRuns);
       el("stop-run").addEventListener("click", stopRun);

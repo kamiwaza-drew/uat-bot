@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import html
+import html as html_mod
 import json
 from pathlib import Path
 
@@ -39,14 +39,19 @@ class ReportGenerator:
             for path in sorted(shots_dir.rglob("*.png")) + sorted(shots_dir.rglob("*.jpg")):
                 screenshot_rel_paths.append(path.relative_to(run_dir).as_posix())
 
-        html = self._render(run_id=run_id, rows=rows, screenshot_paths=screenshot_rel_paths, events=events)
+        report_html = self._render(
+            run_id=run_id,
+            rows=rows,
+            screenshot_paths=screenshot_rel_paths,
+            events=events,
+        )
         report_path = run_dir / "report.html"
-        report_path.write_text(html, encoding="utf-8")
+        report_path.write_text(report_html, encoding="utf-8")
         return report_path
 
     @staticmethod
     def _esc(value: object) -> str:
-        return html.escape(str(value or ""))
+        return html_mod.escape(str(value or ""))
 
     def _render(
         self,
@@ -58,34 +63,10 @@ class ReportGenerator:
         error_count = sum(1 for row in rows if row.get("status") == "error")
         ok_count = sum(1 for row in rows if row.get("status") == "ok")
 
-        screenshot_items = "\n".join(
-            (
-                "<div class='shot'>"
-                f"<a href='/runs/{run_id}/artifacts/{path}' target='_blank'>"
-                f"<img src='/runs/{run_id}/artifacts/{path}' alt='{path}'/></a>"
-                f"<p>{self._esc(path)}</p></div>"
-            )
-            for path in screenshot_paths
-        )
-        table_rows = "\n".join(
-            "<tr>"
-            f"<td>{self._esc(row.get('ts', ''))}</td>"
-            f"<td>{self._esc(row.get('worker_id', ''))}</td>"
-            f"<td>{self._esc(row.get('action', ''))}</td>"
-            f"<td>{self._esc(row.get('status', ''))}</td>"
-            f"<td>{self._esc(row.get('duration_ms', ''))}</td>"
-            f"<td>{self._esc(row.get('detail', ''))}</td>"
-            "</tr>"
-            for row in rows
-        )
-        event_rows = "\n".join(
-            "<tr>"
-            f"<td>{self._esc(event.get('ts', ''))}</td>"
-            f"<td>{self._esc(event.get('type', ''))}</td>"
-            f"<td><code>{self._esc(json.dumps(event.get('payload', {}), ensure_ascii=True))}</code></td>"
-            "</tr>"
-            for event in events
-        )
+        # Serialize data as JSON for client-side pagination
+        screenshots_json = json.dumps(screenshot_paths, ensure_ascii=True)
+        metrics_json = json.dumps(rows, ensure_ascii=True)
+        events_json = json.dumps(events, ensure_ascii=True)
 
         return f"""<!doctype html>
 <html>
@@ -93,18 +74,46 @@ class ReportGenerator:
   <meta charset='utf-8' />
   <title>UAT Bot Report {run_id}</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 24px; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 24px; color: #1a1a1a; }}
     .stats {{ display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }}
     .stats div {{ padding: 12px; background: #f5f7fa; border-radius: 8px; }}
     .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }}
-    .shot {{ border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #fff; }}
+    .shot {{ border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #fff; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }}
+    .shot:hover {{ transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.12); }}
     .shot img {{ width: 100%; display: block; }}
     .shot p {{ margin: 8px; font-size: 12px; word-break: break-all; }}
+    .lb {{ display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.88); align-items:center; justify-content:center; flex-direction:column; }}
+    .lb.open {{ display:flex; }}
+    .lb img {{ max-width:92vw; max-height:80vh; border-radius:8px; box-shadow:0 8px 40px rgba(0,0,0,0.5); }}
+    .lb .cap {{ color:#ccc; font-size:13px; margin-top:10px; text-align:center; }}
+    .lb .cnt {{ color:#888; font-size:12px; margin-top:4px; }}
+    .lb .nav {{ position:absolute; top:50%; transform:translateY(-50%); background:rgba(255,255,255,0.15); border:none; color:#fff; font-size:32px; width:48px; height:48px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; }}
+    .lb .nav:hover {{ background:rgba(255,255,255,0.3); }}
+    .lb .prv {{ left:16px; }}
+    .lb .nxt {{ right:16px; }}
+    .lb .cls {{ position:absolute; top:16px; right:16px; background:rgba(255,255,255,0.15); border:none; color:#fff; font-size:24px; width:40px; height:40px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; }}
+    .lb .cls:hover {{ background:rgba(255,255,255,0.3); }}
     .section {{ margin-top: 24px; }}
     code {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
-    table {{ width: 100%; border-collapse: collapse; margin-top: 24px; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
     th, td {{ border: 1px solid #e5e7eb; padding: 8px; font-size: 13px; text-align: left; }}
     th {{ background: #f8fafc; }}
+    .pager {{ display: flex; align-items: center; gap: 10px; margin: 12px 0; flex-wrap: wrap; }}
+    .pager button {{
+      border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 14px;
+      background: #fff; cursor: pointer; font-size: 13px;
+    }}
+    .pager button:disabled {{ opacity: 0.4; cursor: default; }}
+    .pager button:hover:not(:disabled) {{ background: #f3f4f6; }}
+    .pager .info {{ font-size: 13px; color: #6b7280; }}
+    .pager select {{ border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 8px; font-size: 13px; }}
+    .filter-bar {{ display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }}
+    .filter-bar select, .filter-bar input {{
+      border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 8px; font-size: 13px;
+    }}
+    .status-error {{ color: #b42318; font-weight: 600; }}
+    .status-ok {{ color: #117f2d; }}
+    .status-warn {{ color: #b35a00; }}
   </style>
 </head>
 <body>
@@ -119,32 +128,241 @@ class ReportGenerator:
   </div>
 
   <h2 class='section'>Screenshots</h2>
-  <div class='grid'>
-    {screenshot_items}
+  <div class="pager" id="shots-pager"></div>
+  <div class='grid' id="shots-grid"></div>
+
+  <div class="lb" id="lb">
+    <button class="cls" id="lb-cls" onclick="closeLb()">&times;</button>
+    <button class="nav prv" id="lb-prv" onclick="lbNav(-1)">&#8249;</button>
+    <button class="nav nxt" id="lb-nxt" onclick="lbNav(1)">&#8250;</button>
+    <img id="lb-img" src="" alt="Screenshot" />
+    <div class="cap" id="lb-cap"></div>
+    <div class="cnt" id="lb-cnt"></div>
   </div>
 
   <h2 class='section'>Metrics</h2>
+  <div class="filter-bar">
+    <label>Status: <select id="metrics-status-filter">
+      <option value="">All</option>
+      <option value="ok">OK</option>
+      <option value="error">Error</option>
+      <option value="warn">Warn</option>
+    </select></label>
+    <label>Action: <select id="metrics-action-filter"><option value="">All</option></select></label>
+  </div>
+  <div class="pager" id="metrics-pager"></div>
   <table>
     <thead>
       <tr>
         <th>Timestamp</th><th>Worker</th><th>Action</th><th>Status</th><th>Duration (ms)</th><th>Detail</th>
       </tr>
     </thead>
-    <tbody>
-      {table_rows}
-    </tbody>
+    <tbody id="metrics-tbody"></tbody>
   </table>
 
   <h2 class='section'>Run/Event Logs</h2>
+  <div class="pager" id="events-pager"></div>
   <table>
     <thead>
       <tr>
         <th>Timestamp</th><th>Type</th><th>Payload</th>
       </tr>
     </thead>
-    <tbody>
-      {event_rows}
-    </tbody>
+    <tbody id="events-tbody"></tbody>
   </table>
+
+<script>
+const RUN_ID = {json.dumps(run_id)};
+const ALL_SHOTS = {screenshots_json};
+const ALL_METRICS = {metrics_json};
+const ALL_EVENTS = {events_json};
+
+function esc(v) {{
+  return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}}
+
+function statusClass(s) {{
+  if (s === "error") return "status-error";
+  if (s === "ok") return "status-ok";
+  if (s === "warn") return "status-warn";
+  return "";
+}}
+
+/* ---- Paginator ---- */
+function makePager(containerEl, total, pageSize, currentPage, onPageChange) {{
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const p = Math.min(Math.max(1, currentPage), pages);
+
+  let html = '<button data-p="1">&laquo;</button>';
+  html += '<button data-p="' + (p - 1) + '">&lsaquo; Prev</button>';
+  html += '<span class="info">Page ' + p + ' / ' + pages + ' (' + total + ' items)</span>';
+  html += '<button data-p="' + (p + 1) + '">Next &rsaquo;</button>';
+  html += '<button data-p="' + pages + '">&raquo;</button>';
+  html += ' <select data-role="pagesize">';
+  [20, 50, 100, 200].forEach(function(s) {{
+    html += '<option value="' + s + '"' + (s === pageSize ? ' selected' : '') + '>' + s + '/page</option>';
+  }});
+  html += '</select>';
+
+  containerEl.innerHTML = html;
+
+  containerEl.querySelectorAll("button[data-p]").forEach(function(btn) {{
+    const target = parseInt(btn.getAttribute("data-p"));
+    btn.disabled = target < 1 || target > pages || target === p;
+    btn.addEventListener("click", function() {{ onPageChange(target, pageSize); }});
+  }});
+  containerEl.querySelector("select[data-role=pagesize]").addEventListener("change", function(e) {{
+    onPageChange(1, parseInt(e.target.value));
+  }});
+
+  return {{ page: p, pages: pages }};
+}}
+
+/* ---- Screenshots ---- */
+let shotPage = 1, shotSize = 20;
+let lbIdx = 0, lbUrls = [];
+
+function renderShots() {{
+  const pager = makePager(document.getElementById("shots-pager"), ALL_SHOTS.length, shotSize, shotPage, function(p, s) {{
+    shotPage = p; shotSize = s; renderShots();
+  }});
+  shotPage = pager.page;
+
+  const start = (shotPage - 1) * shotSize;
+  const slice = ALL_SHOTS.slice(start, start + shotSize);
+  const grid = document.getElementById("shots-grid");
+
+  // Build full URL list for gallery navigation
+  lbUrls = ALL_SHOTS.map(function(p) {{ return {{ url: "/runs/" + RUN_ID + "/artifacts/" + p, path: p }}; }});
+
+  if (slice.length === 0) {{
+    grid.innerHTML = "<p>No screenshots.</p>";
+    return;
+  }}
+  grid.innerHTML = slice.map(function(path, i) {{
+    const globalIdx = start + i;
+    const url = "/runs/" + RUN_ID + "/artifacts/" + path;
+    return "<div class='shot' onclick='openLb(" + globalIdx + ")'><img loading='lazy' src='" + url + "' alt='" + esc(path) + "'/><p>" + esc(path) + "</p></div>";
+  }}).join("");
+}}
+
+function openLb(idx) {{
+  lbIdx = idx;
+  updateLb();
+  document.getElementById("lb").classList.add("open");
+}}
+function closeLb() {{
+  document.getElementById("lb").classList.remove("open");
+}}
+function lbNav(dir) {{
+  lbIdx = Math.max(0, Math.min(lbUrls.length - 1, lbIdx + dir));
+  updateLb();
+}}
+function updateLb() {{
+  var item = lbUrls[lbIdx];
+  if (!item) return;
+  document.getElementById("lb-img").src = item.url;
+  document.getElementById("lb-cap").textContent = item.path;
+  document.getElementById("lb-cnt").textContent = (lbIdx + 1) + " / " + lbUrls.length;
+}}
+document.getElementById("lb").addEventListener("click", function(e) {{
+  if (e.target === document.getElementById("lb")) closeLb();
+}});
+document.addEventListener("keydown", function(e) {{
+  if (!document.getElementById("lb").classList.contains("open")) return;
+  if (e.key === "Escape") closeLb();
+  if (e.key === "ArrowLeft") lbNav(-1);
+  if (e.key === "ArrowRight") lbNav(1);
+}});
+
+/* ---- Metrics ---- */
+let metricPage = 1, metricSize = 50;
+let metricStatusFilter = "", metricActionFilter = "";
+
+function filteredMetrics() {{
+  return ALL_METRICS.filter(function(r) {{
+    if (metricStatusFilter && r.status !== metricStatusFilter) return false;
+    if (metricActionFilter && r.action !== metricActionFilter) return false;
+    return true;
+  }});
+}}
+
+function renderMetrics() {{
+  const filtered = filteredMetrics();
+  const pager = makePager(document.getElementById("metrics-pager"), filtered.length, metricSize, metricPage, function(p, s) {{
+    metricPage = p; metricSize = s; renderMetrics();
+  }});
+  metricPage = pager.page;
+
+  const start = (metricPage - 1) * metricSize;
+  const slice = filtered.slice(start, start + metricSize);
+  const tbody = document.getElementById("metrics-tbody");
+
+  if (slice.length === 0) {{
+    tbody.innerHTML = "<tr><td colspan='6'>No metrics match the filter.</td></tr>";
+    return;
+  }}
+  tbody.innerHTML = slice.map(function(r) {{
+    return "<tr>"
+      + "<td>" + esc(r.ts) + "</td>"
+      + "<td>" + esc(r.worker_id) + "</td>"
+      + "<td>" + esc(r.action) + "</td>"
+      + "<td class='" + statusClass(r.status) + "'>" + esc(r.status) + "</td>"
+      + "<td>" + esc(r.duration_ms) + "</td>"
+      + "<td>" + esc(r.detail) + "</td>"
+      + "</tr>";
+  }}).join("");
+}}
+
+function initMetricFilters() {{
+  const actions = new Set();
+  ALL_METRICS.forEach(function(r) {{ if (r.action) actions.add(r.action); }});
+  const actionSel = document.getElementById("metrics-action-filter");
+  Array.from(actions).sort().forEach(function(a) {{
+    const opt = document.createElement("option");
+    opt.value = a; opt.textContent = a;
+    actionSel.appendChild(opt);
+  }});
+
+  document.getElementById("metrics-status-filter").addEventListener("change", function(e) {{
+    metricStatusFilter = e.target.value; metricPage = 1; renderMetrics();
+  }});
+  actionSel.addEventListener("change", function(e) {{
+    metricActionFilter = e.target.value; metricPage = 1; renderMetrics();
+  }});
+}}
+
+/* ---- Events ---- */
+let eventPage = 1, eventSize = 50;
+
+function renderEvents() {{
+  const pager = makePager(document.getElementById("events-pager"), ALL_EVENTS.length, eventSize, eventPage, function(p, s) {{
+    eventPage = p; eventSize = s; renderEvents();
+  }});
+  eventPage = pager.page;
+
+  const start = (eventPage - 1) * eventSize;
+  const slice = ALL_EVENTS.slice(start, start + eventSize);
+  const tbody = document.getElementById("events-tbody");
+
+  if (slice.length === 0) {{
+    tbody.innerHTML = "<tr><td colspan='3'>No events.</td></tr>";
+    return;
+  }}
+  tbody.innerHTML = slice.map(function(evt) {{
+    return "<tr>"
+      + "<td>" + esc(evt.ts) + "</td>"
+      + "<td>" + esc(evt.type) + "</td>"
+      + "<td><code>" + esc(JSON.stringify(evt.payload || {{}})) + "</code></td>"
+      + "</tr>";
+  }}).join("");
+}}
+
+/* ---- Boot ---- */
+renderShots();
+initMetricFilters();
+renderMetrics();
+renderEvents();
+</script>
 </body>
 </html>"""

@@ -41,13 +41,22 @@ WELL_KNOWN_SELECTORS: dict[str, list[str]] = {
     ],
     "first_model_card": [
         "[data-testid='model-card']:first-child",
+        "[data-testid='model-card'] a:first-of-type",
         ".model-card:first-child",
-        "a[href*='/models/']:first-of-type",
+        ".model-card a:first-of-type",
+        "main a[href^='/models/']:not([href*='overview']):first-of-type",
+        "a[href^='/models/']:not([href*='overview']):first-of-type",
+        "a[href*='/models/']:not([href*='docs.kamiwaza.ai']):first-of-type",
     ],
     "first_app_card": [
         "[data-testid='app-card']:first-child",
+        "[data-testid='app-card'] a:first-of-type",
         ".app-card:first-child",
-        "a[href*='/apps/']:first-of-type",
+        ".app-card a:first-of-type",
+        "main a[href^='/apps/']:first-of-type",
+        "a[href^='/apps/']:first-of-type",
+        "a[href*='/apps/']:not([href*='docs.kamiwaza.ai']):first-of-type",
+        "button:has-text('Deploy')",
     ],
     "sidebar_models": [
         "a[href='/models']",
@@ -71,9 +80,15 @@ WELL_KNOWN_SELECTORS: dict[str, list[str]] = {
         "nav a:has-text('Vector')",
     ],
     "sidebar_workrooms": [
+        "a[href='/workrooms']",
+        "a[href='/workroom']",
+        "a[href*='/workrooms']",
         "a[href*='/workroom']",
         "[data-testid='nav-workrooms']",
+        "[data-testid='nav-workroom']",
+        "nav a:has-text('Workrooms')",
         "nav a:has-text('Workroom')",
+        "button:has-text('Workrooms')",
     ],
     "sidebar_settings": [
         "a[href='/settings']",
@@ -101,6 +116,55 @@ WELL_KNOWN_SELECTORS: dict[str, list[str]] = {
         "button:has-text('I Agree')",
         "button:has-text('Consent')",
         "[data-testid='consent-accept']",
+    ],
+    # Kaizen (OpenHands-based) UI selectors
+    "kaizen_first_agent_card": [
+        "h3",  # Agent card titles are h3 elements on the agents grid
+    ],
+    "kaizen_chat_button": [
+        "button:has-text('Chat')",
+        "a:has-text('Chat')",
+    ],
+    "kaizen_chat_input": [
+        "textarea[placeholder*='What should we work on' i]",
+        "textarea[placeholder*='Send a message' i]",
+        "textarea[placeholder*='work on' i]",
+        "textarea[placeholder*='message' i]",
+        "textarea[data-testid='chat-input']",
+        "textarea[placeholder*='Type' i]",
+        "#chat-input",
+        ".chat-input textarea",
+        "[data-testid='msg-input']",
+    ],
+    "kaizen_send_button": [
+        "button[type='submit']",
+        "button[data-testid='send-button']",
+        "button[aria-label*='send' i]",
+        "button[aria-label*='Send' i]",
+        "button:has-text('Send')",
+        ".send-button",
+    ],
+    "kaizen_new_conversation": [
+        "button[data-testid='new-conversation']",
+        "button:has-text('New Conversation')",
+        "button:has-text('New Chat')",
+        "a:has-text('New Conversation')",
+        "a:has-text('New Chat')",
+        "[data-testid='new-session']",
+        "button:has-text('New Session')",
+    ],
+    "kaizen_conversation_list": [
+        "[data-testid='conversation-list']",
+        ".conversation-list",
+        "nav[aria-label*='conversation' i]",
+        "#conversation-panel",
+    ],
+    "kaizen_agent_response": [
+        "[data-testid='agent-message']",
+        ".message-agent",
+        ".agent-response",
+        "[data-role='assistant']",
+        ".assistant-message",
     ],
 }
 
@@ -138,6 +202,41 @@ async def _first_visible(page: Page, selectors: list[str]) -> str | None:
     return None
 
 
+async def _dismiss_known_overlays(page: Page) -> None:
+    """Best-effort dismissal of common onboarding overlays that intercept clicks."""
+    try:
+        if await page.locator("#react-joyride-portal").count() <= 0:
+            return
+    except Error:
+        return
+
+    close_selectors = [
+        "#react-joyride-portal button:has-text('Skip')",
+        "#react-joyride-portal button:has-text('Done')",
+        "#react-joyride-portal button:has-text('Close')",
+        "#react-joyride-portal button[aria-label='Close']",
+        "#react-joyride-portal [data-action='close']",
+    ]
+
+    for selector in close_selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() <= 0:
+                continue
+            if not await locator.is_visible(timeout=500):
+                continue
+            await locator.click(timeout=1000)
+            await asyncio.sleep(0.2)
+        except Error:
+            continue
+
+    try:
+        await page.keyboard.press("Escape")
+    except Error:
+        pass
+    await asyncio.sleep(0.2)
+
+
 async def navigate(page: Page, url: str, wait_for: str = "domcontentloaded") -> None:
     """Navigate to a URL and wait for the specified load state."""
     valid_states = {"domcontentloaded", "networkidle", "load", "commit"}
@@ -150,7 +249,24 @@ async def click(page: Page, target: str, timeout: int = 10) -> None:
     selector = await resolve_selector(page, target)
     if not selector:
         raise Error(f"Could not find clickable element for target: {target}")
-    await page.click(selector, timeout=timeout * 1000)
+    try:
+        await page.click(selector, timeout=timeout * 1000)
+    except Error as exc:
+        text = str(exc)
+        if "intercepts pointer events" not in text and "Timeout" not in text:
+            raise
+        await _dismiss_known_overlays(page)
+        selector = await resolve_selector(page, target) or selector
+        await page.click(selector, timeout=timeout * 1000)
+
+
+async def hover(page: Page, target: str, timeout: int = 10) -> None:
+    """Hover over an element by resolving the target to a selector."""
+    selector = await resolve_selector(page, target)
+    if not selector:
+        raise Error(f"Could not find element for hover target: {target}")
+    await page.hover(selector, timeout=timeout * 1000)
+    await asyncio.sleep(0.3)  # let hover effects settle
 
 
 async def fill(page: Page, target: str, value: str, timeout: int = 10) -> None:

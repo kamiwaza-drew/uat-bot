@@ -1,0 +1,94 @@
+name: kaizen_load
+description: Kaizen load test — hover agent card to start chat, send multiple messages.
+timeout: 600
+required_role: viewer
+tags: [kaizen, chat, load]
+
+steps:
+  # Hover first agent card and click Chat button (atomic JS)
+  - action: js_eval
+    value: |
+      (async () => {
+        let card = document.querySelector('.cursor-pointer.rounded-2xl');
+        if (!card) {
+          const h3 = document.querySelector('h3');
+          if (!h3) return 'ERROR: No agent cards found. URL=' + location.href;
+          card = h3.closest('.rounded-2xl') || h3.parentElement;
+          if (!card) return 'ERROR: Could not find card container';
+        }
+        const rect = card.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+        card.dispatchEvent(new PointerEvent('pointerenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new PointerEvent('pointerover', opts));
+        card.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new MouseEvent('mouseover', opts));
+        await new Promise(r => setTimeout(r, 600));
+        const btns = card.querySelectorAll('button');
+        for (const btn of btns) {
+          const text = btn.textContent || '';
+          if (text.includes('Chat') && !text.includes('Private')) {
+            btn.click();
+            return 'OK: Clicked Chat button';
+          }
+        }
+        return 'ERROR: Chat button not found after hover';
+      })()
+    timeout: 15
+
+  # Wait for sandbox startup and navigation to conversation page
+  - action: wait_for_url
+    value: conversations
+    timeout: 120
+
+  - action: wait_for
+    target: kaizen_chat_input
+    timeout: 30
+
+  # Message 1
+  - action: fill
+    target: kaizen_chat_input
+    value: "List the files in the current directory"
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  - action: sleep
+    timeout: 20
+
+  - action: screenshot
+    screenshot_name: response_1
+
+  # Message 2
+  - action: fill
+    target: kaizen_chat_input
+    value: "Create a file called test.py with a function that adds two numbers"
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  - action: sleep
+    timeout: 25
+
+  - action: screenshot
+    screenshot_name: response_2
+
+  # Message 3
+  - action: fill
+    target: kaizen_chat_input
+    value: "Read the file test.py and show me its contents"
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  - action: sleep
+    timeout: 20
+
+  - action: screenshot
+    screenshot_name: response_3
+    validate:
+      - no_errors: true

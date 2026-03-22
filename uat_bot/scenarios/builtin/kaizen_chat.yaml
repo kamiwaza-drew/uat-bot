@@ -1,0 +1,89 @@
+name: kaizen_chat
+description: Kaizen functional test — hover agent card to reveal Chat button, click it, send message, wait for response.
+timeout: 300
+required_role: viewer
+tags: [kaizen, chat, functional]
+
+steps:
+  # Step 1: Screenshot the agents page we landed on after login
+  - action: screenshot
+    screenshot_name: kaizen_agents_page
+
+  # Step 2: Hover the first agent card and click Chat (atomic JS to avoid race conditions)
+  - action: js_eval
+    value: |
+      (async () => {
+        // Find agent card containers
+        let card = document.querySelector('.cursor-pointer.rounded-2xl');
+        if (!card) {
+          const h3 = document.querySelector('h3');
+          if (!h3) return 'ERROR: No agent cards or h3 elements found on page. URL=' + location.href;
+          card = h3.closest('.rounded-2xl') || h3.parentElement;
+          if (!card) return 'ERROR: Could not find card container from h3';
+        }
+
+        // Dispatch all pointer/mouse enter events to trigger React's onMouseEnter
+        const rect = card.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+        card.dispatchEvent(new PointerEvent('pointerenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new PointerEvent('pointerover', opts));
+        card.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new MouseEvent('mouseover', opts));
+
+        // Wait for React to re-render (Chat button has animate-in fade-in duration-200)
+        await new Promise(r => setTimeout(r, 600));
+
+        // Find the Chat button within the card
+        const btns = card.querySelectorAll('button');
+        for (const btn of btns) {
+          const text = btn.textContent || '';
+          if (text.includes('Chat') && !text.includes('Private')) {
+            btn.click();
+            return 'OK: Clicked Chat button on first agent card';
+          }
+        }
+
+        const btnTexts = Array.from(btns).map(b => (b.textContent || '').trim().substring(0, 30));
+        return 'ERROR: Chat button not found after hover. Card buttons: [' + btnTexts.join(', ') + ']';
+      })()
+    timeout: 15
+
+  - action: screenshot
+    screenshot_name: after_chat_click
+
+  # Step 3: Wait for sandbox startup and navigation to /conversations/
+  - action: wait_for_url
+    value: conversations
+    timeout: 120
+
+  - action: screenshot
+    screenshot_name: conversation_page_loaded
+
+  # Step 4: Wait for the chat input to be ready
+  - action: wait_for
+    target: kaizen_chat_input
+    timeout: 30
+
+  # Step 5: Type a test message
+  - action: fill
+    target: kaizen_chat_input
+    value: "{{test_message}}"
+
+  - action: screenshot
+    screenshot_name: message_typed
+
+  # Step 6: Send the message
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  # Step 7: Wait for agent response
+  - action: sleep
+    timeout: 30
+
+  - action: screenshot
+    screenshot_name: agent_response
+    validate:
+      - no_errors: true

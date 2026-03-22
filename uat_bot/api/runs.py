@@ -57,18 +57,43 @@ async def purge_run(run_id: str, request: Request):
     return {"run_id": run_id, "deleted": True}
 
 
+def _resolve_run_dir(run_id: str, request: Request) -> Path | None:
+    """Resolve the run directory from in-memory state or fallback to disk."""
+    orchestrator = _orchestrator(request)
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    # Try in-memory state first (can't await here, use sync check)
+    state = orchestrator._runs.get(run_id)
+    if state:
+        return state.root_dir
+    # Fallback: check disk
+    data_dir = orchestrator.settings.uat_data_dir / "runs" / run_id
+    if data_dir.exists():
+        return data_dir
+    return None
+
+
 @router.get("/{run_id}/report", response_class=HTMLResponse)
 async def get_report(run_id: str, request: Request):
     orchestrator = _orchestrator(request)
     state = await orchestrator.get_run(run_id)
-    if not state:
+
+    if state:
+        report_path = state.report_path
+        if not report_path or not report_path.exists():
+            report_path = await orchestrator.reporter.generate(run_id, state.root_dir)
+            state.report_path = report_path
+        return HTMLResponse(content=report_path.read_text(encoding="utf-8"))
+
+    # Fallback: serve from disk for historical runs
+    run_dir = _resolve_run_dir(run_id, request)
+    if not run_dir:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    report_path = state.report_path
-    if not report_path or not report_path.exists():
-        report_path = await orchestrator.reporter.generate(run_id, state.root_dir)
-        state.report_path = report_path
-
+    report_path = run_dir / "report.html"
+    if not report_path.exists():
+        report_path = await orchestrator.reporter.generate(run_id, run_dir)
     return HTMLResponse(content=report_path.read_text(encoding="utf-8"))
 
 
@@ -76,11 +101,16 @@ async def get_report(run_id: str, request: Request):
 async def get_artifact(run_id: str, artifact_path: str, request: Request):
     orchestrator = _orchestrator(request)
     state = await orchestrator.get_run(run_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Run not found")
 
-    candidate = (state.root_dir / artifact_path).resolve()
-    root = state.root_dir.resolve()
+    if state:
+        run_dir = state.root_dir
+    else:
+        run_dir = _resolve_run_dir(run_id, request)
+        if not run_dir:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+    candidate = (run_dir / artifact_path).resolve()
+    root = run_dir.resolve()
     try:
         candidate.relative_to(root)
     except ValueError:

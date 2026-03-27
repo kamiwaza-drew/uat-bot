@@ -4,9 +4,16 @@ import html as html_mod
 import json
 from pathlib import Path
 
+from uat_bot.reporting.analyzer import AnalysisReport
+
 
 class ReportGenerator:
-    async def generate(self, run_id: str, run_dir: Path) -> Path:
+    async def generate(
+        self,
+        run_id: str,
+        run_dir: Path,
+        ai_analysis: AnalysisReport | None = None,
+    ) -> Path:
         metrics_path = run_dir / "metrics.jsonl"
         rows: list[dict] = []
         events_path = run_dir / "events.jsonl"
@@ -44,14 +51,161 @@ class ReportGenerator:
             rows=rows,
             screenshot_paths=screenshot_rel_paths,
             events=events,
+            ai_analysis=ai_analysis,
         )
         report_path = run_dir / "report.html"
         report_path.write_text(report_html, encoding="utf-8")
+
+        # Also persist analysis JSON for programmatic access
+        if ai_analysis and not ai_analysis.error:
+            analysis_path = run_dir / "ai_analysis.json"
+            analysis_path.write_text(
+                json.dumps(
+                    {
+                        "overall_verdict": ai_analysis.overall_verdict,
+                        "executive_summary": ai_analysis.executive_summary,
+                        "pass_count": ai_analysis.pass_count,
+                        "fail_count": ai_analysis.fail_count,
+                        "warn_count": ai_analysis.warn_count,
+                        "steps": [
+                            {
+                                "screenshot": v.screenshot,
+                                "verdict": v.verdict,
+                                "summary": v.summary,
+                                "issues": v.issues,
+                            }
+                            for v in ai_analysis.step_verdicts
+                        ],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
         return report_path
 
     @staticmethod
     def _esc(value: object) -> str:
         return html_mod.escape(str(value or ""))
+
+    def _render_ai_analysis(self, ai_analysis: AnalysisReport | None, run_id: str) -> str:
+        if not ai_analysis:
+            return ""
+
+        verdict_color = {
+            "pass": "#117f2d",
+            "fail": "#b42318",
+            "warn": "#b35a00",
+        }.get(ai_analysis.overall_verdict, "#6b7280")
+        verdict_bg = {
+            "pass": "#ecfdf5",
+            "fail": "#fef2f2",
+            "warn": "#fffbeb",
+        }.get(ai_analysis.overall_verdict, "#f5f7fa")
+        verdict_label = ai_analysis.overall_verdict.upper()
+
+        # Build step verdicts as JSON for client-side rendering
+        step_data = json.dumps(
+            [
+                {
+                    "screenshot": v.screenshot,
+                    "verdict": v.verdict,
+                    "summary": v.summary,
+                    "issues": v.issues,
+                }
+                for v in ai_analysis.step_verdicts
+            ],
+            ensure_ascii=True,
+        )
+
+        error_note = ""
+        if ai_analysis.error:
+            error_note = (
+                f"<p style='color:#b42318;font-size:13px;'>"
+                f"Note: Analysis encountered an error: {self._esc(ai_analysis.error)}</p>"
+            )
+
+        return f"""
+  <h2 class='section'>AI Analysis</h2>
+  <div style='border:2px solid {verdict_color};border-radius:12px;padding:20px;
+              background:{verdict_bg};margin-bottom:16px;'>
+    <div style='display:flex;align-items:center;gap:12px;margin-bottom:12px;'>
+      <span style='font-size:28px;font-weight:700;color:{verdict_color};'>{verdict_label}</span>
+      <span style='font-size:14px;color:#6b7280;'>
+        {ai_analysis.pass_count} passed &middot;
+        {ai_analysis.fail_count} failed &middot;
+        {ai_analysis.warn_count} warnings
+      </span>
+    </div>
+    <p style='font-size:14px;line-height:1.6;margin:0;'>{self._esc(ai_analysis.executive_summary)}</p>
+    {error_note}
+  </div>
+
+  <h3>Step-by-Step Verdicts</h3>
+  <div class="filter-bar">
+    <label>Verdict: <select id="ai-verdict-filter">
+      <option value="">All</option>
+      <option value="pass">Pass</option>
+      <option value="fail">Fail</option>
+      <option value="warn">Warn</option>
+    </select></label>
+  </div>
+  <div class="pager" id="ai-pager"></div>
+  <table>
+    <thead>
+      <tr>
+        <th style='width:60px;'>Verdict</th>
+        <th>Screenshot</th>
+        <th>Summary</th>
+        <th>Issues</th>
+      </tr>
+    </thead>
+    <tbody id="ai-tbody"></tbody>
+  </table>
+
+  <script>
+  const AI_STEPS = {step_data};
+  const AI_RUN_ID = {json.dumps(run_id)};
+  let aiPage = 1, aiSize = 50, aiFilter = "";
+
+  function filteredAI() {{
+    return AI_STEPS.filter(function(s) {{
+      return !aiFilter || s.verdict === aiFilter;
+    }});
+  }}
+
+  function renderAI() {{
+    const filtered = filteredAI();
+    const pager = makePager(document.getElementById("ai-pager"), filtered.length, aiSize, aiPage, function(p, s) {{
+      aiPage = p; aiSize = s; renderAI();
+    }});
+    aiPage = pager.page;
+    const start = (aiPage - 1) * aiSize;
+    const slice = filtered.slice(start, start + aiSize);
+    const tbody = document.getElementById("ai-tbody");
+    if (slice.length === 0) {{
+      tbody.innerHTML = "<tr><td colspan='4'>No steps match filter.</td></tr>";
+      return;
+    }}
+    tbody.innerHTML = slice.map(function(s) {{
+      const vc = s.verdict === "fail" ? "status-error" : s.verdict === "pass" ? "status-ok" : "status-warn";
+      const badge = s.verdict.toUpperCase();
+      const imgLink = "<a href='/runs/" + AI_RUN_ID + "/artifacts/" + s.screenshot + "' target='_blank'>" + esc(s.screenshot.split("/").pop()) + "</a>";
+      const issues = (s.issues || []).map(function(i) {{ return "<li>" + esc(i) + "</li>"; }}).join("");
+      const issueList = issues ? "<ul style='margin:0;padding-left:16px;'>" + issues + "</ul>" : "&mdash;";
+      return "<tr><td class='" + vc + "' style='font-weight:600;text-align:center;'>" + badge + "</td>"
+        + "<td>" + imgLink + "</td>"
+        + "<td>" + esc(s.summary) + "</td>"
+        + "<td>" + issueList + "</td></tr>";
+    }}).join("");
+  }}
+
+  document.getElementById("ai-verdict-filter").addEventListener("change", function(e) {{
+    aiFilter = e.target.value; aiPage = 1; renderAI();
+  }});
+  renderAI();
+  </script>
+"""
 
     def _render(
         self,
@@ -59,6 +213,7 @@ class ReportGenerator:
         rows: list[dict],
         screenshot_paths: list[str],
         events: list[dict],
+        ai_analysis: AnalysisReport | None = None,
     ) -> str:
         error_count = sum(1 for row in rows if row.get("status") == "error")
         ok_count = sum(1 for row in rows if row.get("status") == "ok")
@@ -67,6 +222,8 @@ class ReportGenerator:
         screenshots_json = json.dumps(screenshot_paths, ensure_ascii=True)
         metrics_json = json.dumps(rows, ensure_ascii=True)
         events_json = json.dumps(events, ensure_ascii=True)
+
+        ai_section = self._render_ai_analysis(ai_analysis, run_id)
 
         return f"""<!doctype html>
 <html>
@@ -126,6 +283,8 @@ class ReportGenerator:
     <div><strong>Screenshots:</strong> {len(screenshot_paths)}</div>
     <div><strong>Events Logged:</strong> {len(events)}</div>
   </div>
+
+  {ai_section}
 
   <h2 class='section'>Screenshots</h2>
   <div class="pager" id="shots-pager"></div>

@@ -72,7 +72,9 @@ class Worker:
         profile = get_profile(self.assignment.os_profile)
 
         # Load all available scenarios
-        available_scenarios = load_all_scenarios()
+        available_scenarios = load_all_scenarios(
+            [self.settings.uat_data_dir / "scenarios"]
+        )
 
         async with async_playwright() as pw:
             browser = await self._launch_browser(pw, self.assignment.browser)
@@ -329,6 +331,55 @@ class Worker:
             }
         )
 
+        # Local dev mode can disable auth entirely. If the session endpoint
+        # says auth is disabled, skip the login flow and continue with the app.
+        try:
+            session_info = await page.evaluate(
+                """async () => {
+                    try {
+                        const resp = await fetch('/api/session', { credentials: 'include' });
+                        if (!resp.ok) return null;
+                        return await resp.json();
+                    } catch {
+                        return null;
+                    }
+                }"""
+            )
+        except Error:
+            session_info = None
+
+        if isinstance(session_info, dict) and session_info.get("auth_enabled") is False:
+            self._step += 1
+            ts_start = perf_counter()
+            post_shot = await self.screenshot_manager.capture(
+                page,
+                self.assignment.worker_id,
+                self._step,
+                "after_login",
+                full_page=True,
+            )
+            await self.metric_sink(
+                {
+                    **self._user_context,
+                    "run_id": self.run_id,
+                    "worker_id": self.assignment.worker_id,
+                    "action": "login",
+                    "status": "skipped",
+                    "duration_ms": int((perf_counter() - ts_start) * 1000),
+                    "screenshot": post_shot.name,
+                    "detail": "auth disabled; skipping login",
+                }
+            )
+            await self.event_sink(
+                "worker.login_skipped",
+                {
+                    "worker_id": self.assignment.worker_id,
+                    "reason": "auth disabled in session response",
+                    "url": page.url,
+                },
+            )
+            return
+
         # Handle consent gate if present
         from uat_bot.browser.actions import resolve_selector
 
@@ -356,6 +407,124 @@ class Worker:
                 "input[type='password']",
             ],
         )
+
+        if not username_selector or not password_selector:
+            login_button_selector = await self._first_visible(
+                page,
+                [
+                    "button:has-text('Log In')",
+                    "button:has-text('Log in')",
+                ],
+            )
+            if login_button_selector:
+                await page.click(login_button_selector)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10_000)
+                except Error:
+                    pass
+                username_selector = await self._first_visible(
+                    page,
+                    [
+                        "input[name='username']",
+                        "input[type='email']",
+                        "input[name='email']",
+                        "input[placeholder*='user' i]",
+                    ],
+                )
+                password_selector = await self._first_visible(
+                    page,
+                    [
+                        "input[name='password']",
+                        "input[type='password']",
+                    ],
+                )
+
+        if not username_selector or not password_selector:
+            login_url = None
+            try:
+                login_url = await page.evaluate(
+                    """async () => {
+                        try {
+                          const resp = await fetch(`/api/auth/login-url?redirect_uri=${encodeURIComponent(window.location.href)}`, { credentials: 'include' });
+                          if (!resp.ok) return null;
+                          const data = await resp.json();
+                          return typeof data?.login_url === 'string' ? data.login_url : null;
+                        } catch {
+                          return null;
+                        }
+                    }"""
+                )
+            except Error:
+                login_url = None
+
+            if login_url:
+                await page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10_000)
+                except Error:
+                    pass
+                username_selector = await self._first_visible(
+                    page,
+                    [
+                        "input[name='username']",
+                        "input[type='email']",
+                        "input[name='email']",
+                        "input[placeholder*='user' i]",
+                    ],
+                )
+                password_selector = await self._first_visible(
+                    page,
+                    [
+                        "input[name='password']",
+                        "input[type='password']",
+                    ],
+                )
+
+        if not username_selector or not password_selector:
+            # Some local Kaizen deployments intentionally run with auth disabled.
+            # In that mode the app shell is already visible and no login form is
+            # rendered, so treat the session as authenticated and keep going.
+            # The app can render a loading shell first and then hydrate into the
+            # real agent dashboard a moment later, so give it a short grace
+            # period before declaring the session unauthenticated.
+            for _ in range(10):
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=1_500)
+                except Error:
+                    pass
+                if await self._looks_like_app_shell(page) or not await self._looks_like_login_page(page):
+                    self._step += 1
+                    ts_start = perf_counter()
+                    post_shot = await self.screenshot_manager.capture(
+                        page,
+                        self.assignment.worker_id,
+                        self._step,
+                        "after_login",
+                        full_page=True,
+                    )
+                    await self.metric_sink(
+                        {
+                            **self._user_context,
+                            "run_id": self.run_id,
+                            "worker_id": self.assignment.worker_id,
+                            "action": "login",
+                            "status": "skipped",
+                            "duration_ms": int((perf_counter() - ts_start) * 1000),
+                            "screenshot": post_shot.name,
+                            "detail": "login form not present; app shell detected",
+                        }
+                    )
+                    await self.event_sink(
+                        "worker.login_skipped",
+                        {
+                            "worker_id": self.assignment.worker_id,
+                            "reason": "no login form and app shell or non-auth page detected",
+                            "url": page.url,
+                        },
+                    )
+                    return
+                await asyncio.sleep(1)
+
         submit_selector = await self._first_visible(
             page,
             [
@@ -463,3 +632,62 @@ class Worker:
             except Error:
                 continue
         return None
+
+    async def _looks_like_app_shell(self, page: Page) -> bool:
+        """Return True when the loaded page already looks like the app shell."""
+        try:
+            body_text = await page.evaluate(
+                "document.body ? (document.body.innerText || '') : ''"
+            )
+        except Error:
+            return False
+
+        haystack = body_text.lower()
+        markers = (
+            "agents",
+            "conversations",
+            "search",
+            "create new agent",
+            "recipes",
+            "workroom",
+        )
+        if any(marker in haystack for marker in markers):
+            return True
+
+        # The Kaizen shell renders visible cards and a recent conversations rail
+        # even before the client finishes hydrating, so treat that structure as a
+        # valid authenticated landing surface too.
+        return (
+            await self._first_visible(
+                page,
+                [
+                    "button[title='Recent conversations']",
+                    "h3",
+                    "[data-testid='conversation-list']",
+                ],
+            )
+            is not None
+        )
+
+    async def _looks_like_login_page(self, page: Page) -> bool:
+        """Return True when the page still appears to be an auth surface."""
+        url = page.url.lower()
+        if any(marker in url for marker in ("/login", "/signin", "/sign-in", "/auth", "/realms/")):
+            return True
+
+        try:
+            body_text = await page.evaluate(
+                "document.body ? (document.body.innerText || '') : ''"
+            )
+        except Error:
+            return False
+
+        haystack = body_text.lower()
+        login_markers = (
+            "sign in",
+            "log in",
+            "login",
+            "keycloak",
+            "authenticate",
+        )
+        return any(marker in haystack for marker in login_markers)

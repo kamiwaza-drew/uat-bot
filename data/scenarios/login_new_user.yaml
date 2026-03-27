@@ -1,0 +1,173 @@
+name: login_new_user
+description: Create a new user, logout, then login as the new user and verify successful
+  login.
+timeout: 300
+required_role: admin
+tags:
+- auth
+- user_management
+- smoke
+steps:
+- action: navigate
+  url: /settings
+  wait_for: networkidle
+  validate:
+  - no_errors: true
+- action: screenshot
+  screenshot_name: settings_page
+- action: js_eval
+  value: "(async () => {\n  // Look for a Users tab/link/button in settings\n  const\
+    \ candidates = [...document.querySelectorAll('a, button, [role=\"tab\"], div[class*=\"\
+    tab\"]')];\n  for (const el of candidates) {\n    const text = (el.textContent\
+    \ || '').trim().toLowerCase();\n    if (text === 'users' || text === 'user management'\
+    \ || text === 'manage users') {\n      el.click();\n      return 'OK: Clicked\
+    \ users section: ' + text;\n    }\n  }\n  // Try nav/sidebar links\n  const links\
+    \ = [...document.querySelectorAll('a[href*=\"user\"], a[href*=\"admin\"]')];\n\
+    \  if (links.length > 0) {\n    links[0].click();\n    return 'OK: Clicked user\
+    \ link: ' + links[0].href;\n  }\n  return 'ERROR: Could not find users section.\
+    \ Available texts: ' + candidates.slice(0, 10).map(e => (e.textContent || '').trim().substring(0,\
+    \ 30)).join(', ');\n})()\n"
+  timeout: 15
+- action: sleep
+  timeout: 3
+- action: screenshot
+  screenshot_name: users_section
+  validate:
+  - no_errors: true
+  - vision: A user management or user list page is displayed, possibly with options
+      to add or invite users
+- action: js_eval
+  value: "(async () => {\n  const btns = [...document.querySelectorAll('button, a')];\n\
+    \  for (const btn of btns) {\n    const text = (btn.textContent || '').trim().toLowerCase();\n\
+    \    if (text.includes('add user') || text.includes('create user') || text.includes('new\
+    \ user') || text.includes('invite user') || text === 'add' || text === 'create')\
+    \ {\n      btn.click();\n      return 'OK: Clicked: ' + text;\n    }\n  }\n  //\
+    \ Try plus icon buttons near user context\n  const plusBtns = document.querySelectorAll('button\
+    \ svg, button [class*=\"plus\"], button [class*=\"add\"]');\n  if (plusBtns.length\
+    \ > 0) {\n    const btn = plusBtns[0].closest('button');\n    if (btn) { btn.click();\
+    \ return 'OK: Clicked icon button for add'; }\n  }\n  return 'ERROR: No add/create\
+    \ user button found. Buttons: ' + btns.slice(0, 15).map(b => (b.textContent ||\
+    \ '').trim().substring(0, 30)).join(', ');\n})()\n"
+  timeout: 15
+- action: sleep
+  timeout: 3
+- action: screenshot
+  screenshot_name: add_user_form
+  validate:
+  - no_errors: true
+  - vision: A form or dialog for creating a new user is displayed with fields for
+      username, password, or email
+- action: js_eval
+  value: "(async () => {\n  const inputs = [...document.querySelectorAll('input')];\n\
+    \  let filled = [];\n  for (const input of inputs) {\n    const name = (input.name\
+    \ || '').toLowerCase();\n    const placeholder = (input.placeholder || '').toLowerCase();\n\
+    \    const label = (input.getAttribute('aria-label') || '').toLowerCase();\n \
+    \   const id = (input.id || '').toLowerCase();\n    const type = (input.type ||\
+    \ '').toLowerCase();\n    const key = name + ' ' + placeholder + ' ' + label +\
+    \ ' ' + id + ' ' + type;\n\n    const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,\
+    \ 'value').set;\n\n    if (key.includes('username') || key.includes('user name')\
+    \ || (key.includes('name') && !key.includes('last') && !key.includes('full') &&\
+    \ !key.includes('display'))) {\n      nativeSet.call(input, 'uat_test_user_' +\
+    \ Date.now().toString(36));\n      input.dispatchEvent(new Event('input', { bubbles:\
+    \ true }));\n      input.dispatchEvent(new Event('change', { bubbles: true }));\n\
+    \      filled.push('username=' + input.value);\n    } else if (key.includes('email'))\
+    \ {\n      nativeSet.call(input, 'uat_test_' + Date.now().toString(36) + '@test.local');\n\
+    \      input.dispatchEvent(new Event('input', { bubbles: true }));\n      input.dispatchEvent(new\
+    \ Event('change', { bubbles: true }));\n      filled.push('email=' + input.value);\n\
+    \    } else if (key.includes('password') && !key.includes('confirm')) {\n    \
+    \  nativeSet.call(input, 'UatTest!2026secure');\n      input.dispatchEvent(new\
+    \ Event('input', { bubbles: true }));\n      input.dispatchEvent(new Event('change',\
+    \ { bubbles: true }));\n      filled.push('password=set');\n    } else if (key.includes('confirm')\
+    \ || (key.includes('password') && filled.some(f => f.startsWith('password'))))\
+    \ {\n      nativeSet.call(input, 'UatTest!2026secure');\n      input.dispatchEvent(new\
+    \ Event('input', { bubbles: true }));\n      input.dispatchEvent(new Event('change',\
+    \ { bubbles: true }));\n      filled.push('confirm_password=set');\n    }\n  }\n\
+    \  if (filled.length === 0) return 'ERROR: No recognized input fields found. Inputs:\
+    \ ' + inputs.map(i => i.name || i.id || i.type).join(', ');\n  // Store username\
+    \ for later steps\n  window.__uat_new_username = inputs.find(i => {\n    const\
+    \ k = (i.name + ' ' + i.placeholder + ' ' + i.id).toLowerCase();\n    return k.includes('username')\
+    \ || k.includes('user name');\n  })?.value || '';\n  window.__uat_new_password\
+    \ = 'UatTest!2026secure';\n  return 'OK: Filled fields: ' + filled.join(', ')\
+    \ + ' | username=' + window.__uat_new_username;\n})()\n"
+  timeout: 15
+- action: screenshot
+  screenshot_name: user_form_filled
+- action: js_eval
+  value: "(async () => {\n  const btns = [...document.querySelectorAll('button[type=\"\
+    submit\"], button')];\n  for (const btn of btns) {\n    const text = (btn.textContent\
+    \ || '').trim().toLowerCase();\n    if (text.includes('create') || text.includes('save')\
+    \ || text.includes('add') || text.includes('submit') || text.includes('register'))\
+    \ {\n      btn.click();\n      return 'OK: Clicked submit: ' + text;\n    }\n\
+    \  }\n  // Try form submit\n  const form = document.querySelector('form');\n \
+    \ if (form) { form.submit(); return 'OK: Submitted form directly'; }\n  return\
+    \ 'ERROR: No submit button found. Buttons: ' + btns.slice(0, 10).map(b => (b.textContent\
+    \ || '').trim().substring(0, 30)).join(', ');\n})()\n"
+  timeout: 15
+- action: sleep
+  timeout: 5
+- action: screenshot
+  screenshot_name: user_created
+  validate:
+  - no_errors: true
+  - vision: The new user has been created successfully, showing a success message
+      or the user now appears in the user list
+- action: js_eval
+  value: "(async () => {\n  // First try direct logout links/buttons\n  const all\
+    \ = [...document.querySelectorAll('a, button, [role=\"menuitem\"]')];\n  for (const\
+    \ el of all) {\n    const text = (el.textContent || '').trim().toLowerCase();\n\
+    \    if (text === 'logout' || text === 'log out' || text === 'sign out' || text\
+    \ === 'signout') {\n      el.click();\n      return 'OK: Clicked logout: ' + text;\n\
+    \    }\n  }\n  // Try clicking user avatar/profile menu first\n  const avatars\
+    \ = document.querySelectorAll('[class*=\"avatar\"], [class*=\"profile\"], [class*=\"\
+    user-menu\"], img[alt*=\"user\"], img[alt*=\"avatar\"]');\n  for (const av of\
+    \ avatars) {\n    const clickTarget = av.closest('button') || av.closest('a')\
+    \ || av;\n    clickTarget.click();\n    await new Promise(r => setTimeout(r, 1000));\n\
+    \    // Now look for logout in dropdown\n    const items = [...document.querySelectorAll('a,\
+    \ button, [role=\"menuitem\"]')];\n    for (const item of items) {\n      const\
+    \ t = (item.textContent || '').trim().toLowerCase();\n      if (t === 'logout'\
+    \ || t === 'log out' || t === 'sign out' || t === 'signout') {\n        item.click();\n\
+    \        return 'OK: Clicked profile menu then logout';\n      }\n    }\n  }\n\
+    \  return 'ERROR: Could not find logout option. Available: ' + all.slice(0, 15).map(e\
+    \ => (e.textContent || '').trim().substring(0, 30)).join(', ');\n})()\n"
+  timeout: 15
+- action: sleep
+  timeout: 5
+- action: screenshot
+  screenshot_name: logged_out
+  validate:
+  - no_errors: true
+  - vision: A login page or sign-in screen is displayed, confirming the user has been
+      logged out
+- action: fill
+  target: username
+  value: '{{new_username}}'
+- action: fill
+  target: password
+  value: UatTest!2026secure
+- action: click
+  target: submit
+- action: wait_for
+  wait_for: networkidle
+  timeout: 20
+- action: screenshot
+  screenshot_name: new_user_post_login
+  validate:
+  - no_errors: true
+  - vision: The new user is logged in and seeing a dashboard or home page, not a login
+      screen or error message
+- action: js_eval
+  value: "(async () => {\n  const btns = [...document.querySelectorAll('button, a,\
+    \ [role=\"button\"]')];\n  for (const btn of btns) {\n    const text = (btn.textContent\
+    \ || '').trim().toLowerCase();\n    if (text.includes('accept') || text.includes('agree')\
+    \ || text.includes('consent') || text.includes('continue') || text === 'ok') {\n\
+    \      btn.click();\n      return 'OK: Clicked consent/continue: ' + text;\n \
+    \   }\n  }\n  return 'OK: No consent gate found, proceeding';\n})()\n"
+  timeout: 10
+- action: sleep
+  timeout: 3
+- action: screenshot
+  screenshot_name: new_user_dashboard
+  validate:
+  - no_errors: true
+  - vision: The newly created user is successfully logged in and viewing the application
+      dashboard or home page

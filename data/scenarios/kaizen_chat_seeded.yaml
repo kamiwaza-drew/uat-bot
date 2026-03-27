@@ -1,0 +1,189 @@
+name: kaizen_chat_seeded
+description: Kaizen test — seed an agent, open chat from the card, create a conversation, and send a message.
+timeout: 300
+required_role: viewer
+tags: [kaizen, chat, agents]
+
+steps:
+  - action: navigate
+    url: /
+    wait_for: domcontentloaded
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+        const agentName = `UAT Chat ${stamp}`;
+        const deploymentsResponse = await fetch('/api/kamiwaza/active-deployments', {
+          credentials: 'include',
+        });
+        const deploymentsText = await deploymentsResponse.text();
+        if (!deploymentsResponse.ok) {
+          return `ERROR: failed to load active deployments (${deploymentsResponse.status}): ${deploymentsText}`;
+        }
+
+        let deployments;
+        try {
+          deployments = JSON.parse(deploymentsText);
+        } catch (error) {
+          return `ERROR: active deployments response was not JSON: ${deploymentsText.slice(0, 300)}`;
+        }
+
+        if (!Array.isArray(deployments) || deployments.length === 0) {
+          return 'ERROR: no active deployments were returned by /api/kamiwaza/active-deployments';
+        }
+
+        const deployment =
+          deployments.find((item) => item?.status === 'DEPLOYED' && item?.endpoint_path) ||
+          deployments.find((item) => item?.endpoint_path) ||
+          deployments[0];
+        if (!deployment?.endpoint_path) {
+          return `ERROR: active deployment is missing endpoint_path: ${JSON.stringify(deployment)}`;
+        }
+
+        const modelName = deployment.m_name ? `openai/${deployment.m_name}` : 'openai/test-model';
+        const payload = {
+          name: agentName,
+          description: 'Seeded by UAT bot for chat coverage.',
+          agent_config: {
+            llm: {
+              provider: 'kamiwaza',
+              model: modelName,
+              endpoint_path: deployment.endpoint_path,
+              native_tool_calling: false,
+              temperature: 0.2,
+              timeout: 360,
+            },
+            tools: [
+              { name: 'terminal', params: {} },
+              { name: 'file_editor', params: {} },
+              { name: 'task_tracker', params: {} },
+            ],
+            mcp_config: {},
+            agent_context: {
+              custom_instructions: 'Keep responses concise and predictable.',
+            },
+          },
+          custom_instructions: 'Keep responses concise and predictable.',
+        };
+
+        const response = await fetch('/api/agents/', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        const bodyText = await response.text();
+        if (!response.ok) {
+          return `ERROR: failed to seed agent (${response.status}): ${bodyText}`;
+        }
+
+        const agent = JSON.parse(bodyText);
+        localStorage.setItem('uatChatAgentId', agent.id);
+        localStorage.setItem('uatChatAgentName', agent.name || agentName);
+        window.location.assign(`/?uat_chat_seed=${stamp}`);
+        return `OK: created agent ${agent.id} named ${agent.name || agentName}`;
+      })()
+    timeout: 20
+
+  - action: wait_for
+    wait_for: domcontentloaded
+    timeout: 30
+
+  - action: screenshot
+    screenshot_name: chat_home_seeded
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const targetName = localStorage.getItem('uatChatAgentName');
+        if (!targetName) return 'ERROR: seeded agent name missing from window state';
+
+        const heading = [...document.querySelectorAll('h3')].find((el) => {
+          return (el.textContent || '').trim() === targetName;
+        });
+        if (!heading) {
+          const headings = [...document.querySelectorAll('h3')].map((el) => (el.textContent || '').trim()).join(', ');
+          return 'ERROR: seeded agent card not visible. Headings: ' + headings;
+        }
+
+        const card = heading.closest('.rounded-2xl') || heading.parentElement;
+        if (!card) return 'ERROR: could not derive card container for seeded agent';
+
+        const rect = card.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+        card.dispatchEvent(new PointerEvent('pointerenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new PointerEvent('pointerover', opts));
+        card.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new MouseEvent('mouseover', opts));
+
+        await new Promise(r => setTimeout(r, 700));
+
+        const chatButton = [...card.querySelectorAll('button')].find((btn) => {
+          const text = (btn.textContent || '').trim();
+          return text === 'Chat' || text.includes('Chat');
+        });
+        if (!chatButton) {
+          const labels = [...card.querySelectorAll('button')].map((btn) => (btn.textContent || '').trim()).join(', ');
+          return 'ERROR: Chat button not found. Buttons: ' + labels;
+        }
+
+        chatButton.click();
+        return `OK: clicked Chat for ${targetName}`;
+      })()
+    timeout: 20
+
+  - action: screenshot
+    screenshot_name: chat_after_click
+
+  - action: wait_for_url
+    value: conversations
+    timeout: 120
+
+  - action: screenshot
+    screenshot_name: chat_conversation_loaded
+
+  - action: wait_for
+    target: kaizen_chat_input
+    timeout: 30
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "{{test_message}}"
+
+  - action: screenshot
+    screenshot_name: chat_message_typed
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const started = Date.now();
+        while (Date.now() - started < 20000) {
+          const button = [...document.querySelectorAll('button')].find((btn) => {
+            const text = (btn.textContent || '').trim();
+            return text === 'Send' || text.includes('Send');
+          });
+          if (button && !button.disabled) {
+            return 'OK: send button enabled';
+          }
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        return 'ERROR: send button remained disabled';
+      })()
+    timeout: 25
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  - action: sleep
+    timeout: 30
+
+  - action: screenshot
+    screenshot_name: chat_agent_response
+    validate:
+      - no_errors: true

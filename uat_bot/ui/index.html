@@ -666,7 +666,29 @@
       <!-- UAT Builder Panel -->
       <div id="panel-builder" class="mode-panel">
         <h2 class="section-title">UAT Builder</h2>
-        <div class="pill" id="builder-backend-badge" style="margin-bottom:12px;">Backend: detecting...</div>
+        <div style="margin-bottom:12px; display:flex; align-items:center; gap:12px;">
+          <label for="builder-backend-select" style="margin:0; white-space:nowrap;">Backend:</label>
+          <select id="builder-backend-select" style="padding:4px 8px; border-radius:4px; border:1px solid var(--border);">
+            <option value="">detecting...</option>
+          </select>
+          <span class="pill" id="builder-backend-badge" style="margin:0;"></span>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <label for="builder-target-url">Target App URL</label>
+          <input id="builder-target-url" placeholder="https://test.kamiwaza.dev/runtime/apps/kaizen-xxx/" />
+        </div>
+
+        <div class="grid2" style="margin-bottom:10px;">
+          <div>
+            <label for="builder-username">Username</label>
+            <input id="builder-username" value="admin" />
+          </div>
+          <div>
+            <label for="builder-password">Password</label>
+            <input id="builder-password" type="password" value="kamiwaza" />
+          </div>
+        </div>
 
         <div style="margin-bottom:10px;">
           <label for="builder-prompt">Describe what you want to test</label>
@@ -685,9 +707,13 @@
         </div>
 
         <div class="actions">
-          <button class="btn-primary" id="builder-generate">Generate Scenario</button>
+          <button class="btn-primary" id="builder-generate">Generate (Explore App)</button>
+          <button class="btn-secondary" id="builder-generate-blind">Generate (No Browser)</button>
         </div>
         <div class="message" id="builder-message"></div>
+        <div id="builder-progress" style="display:none; margin-top:8px;">
+          <div style="font-size:13px; color:var(--muted);" id="builder-progress-text">Exploring...</div>
+        </div>
 
         <div id="builder-editor-section" style="display:none; margin-top:14px;">
           <label for="builder-yaml">Generated YAML (editable)</label>
@@ -1086,6 +1112,9 @@
       }
       if (browserSum !== payload.concurrent_users) {
         throw new Error(`Browser distribution total (${browserSum}) must equal concurrent users (${payload.concurrent_users}).`);
+      }
+      if (!payload.kamiwaza_url) {
+        throw new Error("Kamiwaza URL is required. Fill in the URL field above.");
       }
       return payload;
     }
@@ -1498,22 +1527,117 @@
     }
 
     async function detectBuilderBackend() {
+      const select = el("builder-backend-select");
+      const badge = el("builder-backend-badge");
       try {
         const res = await fetch("/builder/backends");
         const data = await res.json();
-        const badge = el("builder-backend-badge");
-        if (data.active) {
-          badge.innerHTML = `<span class="dot"></span> Backend: ${data.active}`;
+        select.innerHTML = "";
+        if (data.backends && data.backends.length > 0) {
+          data.backends.forEach((b) => {
+            const opt = document.createElement("option");
+            opt.value = b;
+            opt.textContent = b;
+            if (b === data.active) opt.selected = true;
+            select.appendChild(opt);
+          });
+          badge.innerHTML = `<span class="dot"></span> ${data.backends.length} available`;
         } else {
+          select.innerHTML = '<option value="">none available</option>';
           badge.textContent = "No LLM backend available";
           badge.style.color = "var(--err)";
         }
       } catch {
-        el("builder-backend-badge").textContent = "Backend: error detecting";
+        select.innerHTML = '<option value="">error</option>';
+        badge.textContent = "error detecting";
       }
     }
 
-    async function generateScenario() {
+    async function generateScenarioExplore() {
+      const targetUrl = (el("builder-target-url").value || "").trim();
+      const prompt = (el("builder-prompt").value || "").trim();
+      if (!targetUrl) {
+        setBuilderMessage("Target App URL is required for exploration.", "err");
+        return;
+      }
+      if (!prompt) {
+        setBuilderMessage("Please describe what you want to test.", "warn");
+        return;
+      }
+
+      const username = (el("builder-username").value || "admin").trim();
+      const password = (el("builder-password").value || "").trim();
+      const backend = el("builder-backend-select").value || null;
+
+      setBuilderMessage("Exploring app with LLM... (this may take 2-5 minutes)", "warn");
+      el("builder-generate").disabled = true;
+      el("builder-progress").style.display = "block";
+      el("builder-progress-text").textContent = "Starting exploration...";
+
+      try {
+        const res = await fetch("/builder/explore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_url: targetUrl, task: prompt, username, password, backend }),
+        });
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let finalData = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.type === "step") {
+                el("builder-progress-text").textContent = `Step ${evt.step}: ${evt.message}`;
+              } else if (evt.type === "complete") {
+                finalData = evt;
+              } else if (evt.type === "error") {
+                setBuilderMessage(`Explorer error: ${evt.message}`, "err");
+              }
+            } catch {}
+          }
+        }
+
+        el("builder-progress").style.display = "none";
+
+        if (finalData) {
+          if (finalData.errors && finalData.errors.length > 0) {
+            setBuilderMessage(
+              `Explored ${finalData.steps_taken} steps. Warnings: ${finalData.errors.join("; ")}`,
+              finalData.yaml_content ? "warn" : "err"
+            );
+          } else {
+            setBuilderMessage(
+              `Explored ${finalData.steps_taken} steps. Scenario generated${finalData.success ? " (task completed)" : ""}.`,
+              "ok"
+            );
+          }
+          if (finalData.yaml_content) {
+            el("builder-yaml").value = finalData.yaml_content;
+            el("builder-save-name").value = finalData.name || (el("builder-name").value || "").trim() || "";
+            el("builder-editor-section").style.display = "block";
+          }
+        }
+      } catch (err) {
+        setBuilderMessage(`Error: ${err.message || String(err)}`, "err");
+        el("builder-progress").style.display = "none";
+      } finally {
+        el("builder-generate").disabled = false;
+      }
+    }
+
+    async function generateScenarioBlind() {
       const prompt = (el("builder-prompt").value || "").trim();
       if (!prompt) {
         setBuilderMessage("Please describe what you want to test.", "warn");
@@ -1525,13 +1649,13 @@
       const tags = tagsRaw ? csvToList(tagsRaw) : [];
 
       setBuilderMessage("Generating scenario... (this may take 30-60s)", "warn");
-      el("builder-generate").disabled = true;
+      el("builder-generate-blind").disabled = true;
 
       try {
         const res = await fetch("/builder/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, name, tags }),
+          body: JSON.stringify({ prompt, name, tags, backend: el("builder-backend-select").value || null }),
         });
         const data = await res.json();
 
@@ -1549,7 +1673,7 @@
       } catch (err) {
         setBuilderMessage(`Error: ${err.message || String(err)}`, "err");
       } finally {
-        el("builder-generate").disabled = false;
+        el("builder-generate-blind").disabled = false;
       }
     }
 
@@ -1591,6 +1715,14 @@
       if (!saved) return;
 
       const name = (el("builder-save-name").value || "").trim();
+      // Pull target URL from builder panel, then fall back to stress/kaizen panels
+      const targetUrl = (el("builder-target-url").value || el("kamiwaza-url").value || el("kaizen-extension-url").value || "").trim();
+      if (!targetUrl) {
+        setBuilderSaveMessage("Set Target App URL in the builder panel first.", "err");
+        return;
+      }
+      const adminUser = (el("builder-username").value || el("kamiwaza-admin-user").value || el("kaizen-username").value || "admin").trim();
+      const adminPass = (el("builder-password").value || el("kamiwaza-admin-password").value || el("kaizen-password").value || "").trim();
       try {
         const payload = {
           concurrent_users: 1,
@@ -1604,6 +1736,10 @@
           vision_enabled: false,
           exploratory_pct: 0,
           single_iteration: true,
+          skip_user_provisioning: true,
+          kamiwaza_url: targetUrl,
+          kamiwaza_admin_user: adminUser,
+          kamiwaza_admin_password: adminPass,
         };
 
         setBuilderSaveMessage("Starting run...", "warn");
@@ -1663,7 +1799,8 @@
       el("mode-builder").addEventListener("click", () => switchMode("builder"));
 
       // Builder mode
-      el("builder-generate").addEventListener("click", generateScenario);
+      el("builder-generate").addEventListener("click", generateScenarioExplore);
+      el("builder-generate-blind").addEventListener("click", generateScenarioBlind);
       el("builder-save").addEventListener("click", saveScenario);
       el("builder-save-run").addEventListener("click", saveAndRunScenario);
       detectBuilderBackend();

@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
 from uat_bot.models import RunCreateRequest
+from uat_bot.reporting.analyzer import RunAnalyzer
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -95,6 +96,42 @@ async def get_report(run_id: str, request: Request):
     if not report_path.exists():
         report_path = await orchestrator.reporter.generate(run_id, run_dir)
     return HTMLResponse(content=report_path.read_text(encoding="utf-8"))
+
+
+@router.post("/{run_id}/analyze")
+async def analyze_run(run_id: str, request: Request):
+    """Run (or re-run) AI analysis on a completed run's screenshots."""
+    orchestrator = _orchestrator(request)
+
+    run_dir = _resolve_run_dir(run_id, request)
+    if not run_dir:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    analyzer = RunAnalyzer()
+    if not analyzer.backend:
+        raise HTTPException(
+            status_code=400,
+            detail="No LLM backend available. Install claude or codex CLI.",
+        )
+    analysis = await analyzer.analyze_run(run_dir)
+
+    # Regenerate report with analysis baked in
+    state = await orchestrator.get_run(run_id)
+    report_path = await orchestrator.reporter.generate(run_id, run_dir, ai_analysis=analysis)
+    if state:
+        state.report_path = report_path
+
+    return JSONResponse(
+        content={
+            "run_id": run_id,
+            "overall_verdict": analysis.overall_verdict,
+            "executive_summary": analysis.executive_summary,
+            "pass_count": analysis.pass_count,
+            "fail_count": analysis.fail_count,
+            "warn_count": analysis.warn_count,
+            "report_url": f"/runs/{run_id}/report",
+        }
+    )
 
 
 @router.get("/{run_id}/artifacts/{artifact_path:path}")

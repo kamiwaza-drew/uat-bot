@@ -301,6 +301,13 @@ class ScenarioRunner:
             # Handled in validation phase
             return "vision assertion (see validation)"
 
+        if step.action == "press":
+            key = step.value or step.target or ""
+            if not key:
+                raise Error("press action requires a value or target with the key name (e.g. Enter, ArrowDown)")
+            await self.page.keyboard.press(key)
+            return f"pressed key: {key}"
+
         if step.action == "sleep":
             duration = step.timeout
             await asyncio.sleep(duration)

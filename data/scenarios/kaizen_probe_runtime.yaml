@@ -1,0 +1,30 @@
+name: kaizen_probe_runtime
+description: Probe the authenticated Kaizen browser session for runtime deployment visibility and route availability.
+timeout: 120
+required_role: viewer
+tags: [kaizen, probe, runtime]
+
+steps:
+  - action: navigate
+    url: /
+    wait_for: domcontentloaded
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const [deploymentsResp, searchResp] = await Promise.all([
+          fetch('/api/kamiwaza/active-deployments', { credentials: 'include' }),
+          fetch('/search', { credentials: 'include' }),
+        ]);
+
+        const deploymentsText = await deploymentsResp.text();
+        const searchText = await searchResp.text();
+
+        return JSON.stringify({
+          deployments_status: deploymentsResp.status,
+          deployments_body: deploymentsText.slice(0, 500),
+          search_status: searchResp.status,
+          search_body: searchText.slice(0, 200),
+        });
+      })()
+    timeout: 20

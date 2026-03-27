@@ -1,0 +1,187 @@
+name: kaizen_edit_autosave
+description: Kaizen test — seed an agent through the authenticated browser session, open its edit page, and confirm autosaved edits persist after reload.
+timeout: 240
+required_role: viewer
+tags: [kaizen, agents, edit, autosave]
+
+steps:
+  - action: navigate
+    url: /
+    wait_for: domcontentloaded
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const agentName = 'UAT Edit Seed';
+        const deploymentsResponse = await fetch('/api/kamiwaza/active-deployments', {
+          credentials: 'include',
+        });
+        const deploymentsText = await deploymentsResponse.text();
+        if (!deploymentsResponse.ok) {
+          return `ERROR: failed to load active deployments (${deploymentsResponse.status}): ${deploymentsText}`;
+        }
+
+        let deployments;
+        try {
+          deployments = JSON.parse(deploymentsText);
+        } catch (error) {
+          return `ERROR: active deployments response was not JSON: ${deploymentsText.slice(0, 300)}`;
+        }
+
+        if (!Array.isArray(deployments) || deployments.length === 0) {
+          return 'ERROR: no active deployments were returned by /api/kamiwaza/active-deployments';
+        }
+
+        const deployment =
+          deployments.find((item) => item?.status === 'DEPLOYED' && item?.endpoint_path) ||
+          deployments.find((item) => item?.endpoint_path) ||
+          deployments[0];
+        if (!deployment?.endpoint_path) {
+          return `ERROR: active deployment is missing endpoint_path: ${JSON.stringify(deployment)}`;
+        }
+
+        const modelName = deployment.m_name ? `openai/${deployment.m_name}` : 'openai/test-model';
+        const payload = {
+          name: agentName,
+          description: 'Seeded by UAT bot for edit and autosave coverage.',
+          agent_config: {
+            llm: {
+              provider: 'kamiwaza',
+              model: modelName,
+              endpoint_path: deployment.endpoint_path,
+              native_tool_calling: false,
+              temperature: 0.2,
+              timeout: 360,
+            },
+            tools: [
+              { name: 'terminal', params: {} },
+              { name: 'file_editor', params: {} },
+              { name: 'task_tracker', params: {} },
+            ],
+            mcp_config: {},
+            agent_context: {
+              custom_instructions: 'Keep responses concise and predictable.',
+            },
+          },
+          custom_instructions: 'Keep responses concise and predictable.',
+        };
+
+        const response = await fetch('/api/agents/', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        const bodyText = await response.text();
+        if (!response.ok) {
+          return `ERROR: failed to seed agent (${response.status}): ${bodyText}`;
+        }
+
+        const agent = JSON.parse(bodyText);
+        localStorage.setItem('uatEditedAgentId', agent.id);
+        localStorage.setItem('uatEditedAgentName', agent.name || agentName);
+        window.location.assign(`/agents/${agent.id}?uat_edit=1`);
+        return `OK: created agent ${agent.id} named ${agent.name || agentName}`;
+      })()
+    timeout: 20
+
+  - action: wait_for
+    wait_for: domcontentloaded
+    timeout: 30
+
+  - action: screenshot
+    screenshot_name: edit_page_loaded
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const expectedName = 'UAT Edit Seed Updated';
+        localStorage.setItem('uatEditedAgentUpdatedName', expectedName);
+        return `OK: prepared expected name ${expectedName}`;
+      })()
+    timeout: 10
+
+  - action: fill
+    target: "label:has-text('Name') + input"
+    value: "UAT Edit Seed Updated"
+
+  - action: fill
+    target: "input[placeholder='Optional description']"
+    value: "UAT autosave check"
+
+  - action: fill
+    target: "textarea[placeholder='Add custom instructions for your agent...']"
+    value: "Autosave verified by UAT bot"
+
+  - action: click
+    target: "button:has-text('Skills')"
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: js_eval
+    value: |
+      (async () => {
+        await new Promise(r => setTimeout(r, 3200));
+        window.location.reload();
+        return `OK: reloading after edit to ${localStorage.getItem('uatEditedAgentUpdatedName')}`;
+      })()
+    timeout: 25
+
+  - action: wait_for
+    wait_for: domcontentloaded
+    timeout: 30
+
+  - action: screenshot
+    screenshot_name: edit_reloaded
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const heading = document.querySelector('h1');
+        const name = (heading?.textContent || '').trim();
+        const expected = localStorage.getItem('uatEditedAgentUpdatedName');
+        if (name !== expected) {
+          return 'ERROR: autosaved name did not persist after reload: ' + name;
+        }
+        return 'OK: autosaved edit persisted as ' + name;
+      })()
+    timeout: 15
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const done = [...document.querySelectorAll('a, button')].find((el) => {
+          return (el.textContent || '').trim() === 'Done';
+        });
+        if (!done) return 'ERROR: Done button not found on agent edit page';
+        done.click();
+        return 'OK: clicked Done';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: home_after_edit
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const pathname = window.location.pathname;
+        if (pathname !== '/') {
+          return 'ERROR: expected to return to / but landed on ' + pathname;
+        }
+        const heading = [...document.querySelectorAll('h3')].find((el) => {
+          return (el.textContent || '').trim() === localStorage.getItem('uatEditedAgentUpdatedName');
+        });
+        if (!heading) {
+          return 'ERROR: edited agent not visible on the home page';
+        }
+        return 'OK: returned to home page with edited agent visible';
+      })()
+    timeout: 10

@@ -17,6 +17,7 @@ VALID_ACTIONS = [
     "click",
     "hover",
     "fill",
+    "press",
     "scroll",
     "wait_for",
     "wait_for_url",
@@ -36,24 +37,48 @@ VALID_VALIDATIONS = [
 ]
 
 
+def detect_backends() -> list[str]:
+    """Return all available LLM CLI backends."""
+    available = []
+    if shutil.which("claude"):
+        available.append("claude")
+    if shutil.which("codex") and os.environ.get("OPENAI_API_KEY"):
+        available.append("codex")
+    return available
+
+
 def detect_backend() -> str | None:
     """Return the best available LLM CLI backend, or None."""
-    if shutil.which("codex") and os.environ.get("OPENAI_API_KEY"):
-        return "codex"
-    if shutil.which("claude") and os.environ.get("ANTHROPIC_API_KEY"):
-        return "claude"
-    return None
+    backends = detect_backends()
+    return backends[0] if backends else None
 
 
 def _build_system_prompt() -> str:
     """Build a system prompt with full schema reference for the LLM."""
     selector_names = sorted(WELL_KNOWN_SELECTORS.keys())
 
+    # Load existing scenarios to include as examples
     existing = load_all_scenarios()
     scenario_names = sorted(existing.keys())
 
+    # Include a couple of real examples so the LLM sees the actual style
+    example_scenarios = []
+    for name in ("login", "settings", "kaizen_chat"):
+        scenario = existing.get(name)
+        if scenario and scenario.source_path:
+            try:
+                with open(scenario.source_path, "r", encoding="utf-8") as f:
+                    example_scenarios.append(f.read().strip())
+            except OSError:
+                pass
+
+    examples_block = ""
+    if example_scenarios:
+        examples_block = "EXAMPLE SCENARIOS (study these carefully for style and patterns):\n\n"
+        examples_block += "\n\n---\n\n".join(example_scenarios)
+
     return textwrap.dedent(f"""\
-        You are a UAT scenario generator. Output ONLY valid YAML for a browser test scenario.
+        You are a UAT scenario generator for the Kamiwaza platform. Output ONLY valid YAML.
         Do NOT include any explanation, markdown fences, or commentary — just raw YAML.
 
         SCENARIO SCHEMA:
@@ -67,7 +92,7 @@ def _build_system_prompt() -> str:
         steps:
           - action: <one of: {', '.join(VALID_ACTIONS)}>
             url: <for navigate action, relative path like /settings>
-            target: <CSS selector or well-known name>
+            target: <well-known selector name OR CSS selector>
             value: <for fill/js_eval/wait_for_url>
             wait_for: domcontentloaded | networkidle | load
             timeout: <int, seconds>
@@ -81,24 +106,36 @@ def _build_system_prompt() -> str:
               - vision: "<description of what page should look like>"
         ```
 
-        WELL-KNOWN SELECTOR NAMES (use as target instead of raw CSS):
+        WELL-KNOWN SELECTOR NAMES (use these as target values — the test runner resolves
+        them to multiple CSS fallback selectors automatically):
         {', '.join(selector_names)}
 
-        EXISTING SCENARIOS FOR REFERENCE:
-        {', '.join(scenario_names)}
+        EXISTING SCENARIOS: {', '.join(scenario_names)}
+
+        {examples_block}
 
         PLACEHOLDERS for fill values:
         - {{{{username}}}} and {{{{password}}}} are auto-resolved from test user context
+        - {{{{test_message}}}} is resolved from the user-configured test message
         - Leave value empty for username/password targets to auto-resolve
 
-        RULES:
+        CRITICAL RULES:
         1. Output raw YAML only, no markdown fences, no explanation
-        2. Every scenario must have name, description, and at least one step
-        3. Every step must have an action field
-        4. Use well-known selector names when possible
-        5. Include screenshot steps at key verification points
-        6. Include validate checks to verify expected outcomes
-        7. Start with a navigate step to the relevant page
+        2. For target values, STRONGLY PREFER well-known selector names listed above.
+           Only use raw CSS selectors if no well-known name fits AND you are confident
+           the selector exists. NEVER invent data-testid attributes — the Kamiwaza UI
+           does not use them consistently.
+        3. When you need to interact with elements you cannot be sure exist, use
+           js_eval with error handling (return 'ERROR: ...' on failure, 'OK: ...' on
+           success), or use vision validation to describe what should be visible.
+        4. Include screenshot steps at key points for debugging.
+        5. Use vision validation (validate: - vision: "...") to verify page state
+           instead of relying on fragile CSS selectors for assertions.
+        6. The login flow is handled automatically before your scenario runs — do NOT
+           include login steps unless your scenario specifically tests auth.
+        7. Keep scenarios focused — test one flow, not multiple unrelated features.
+        8. For complex UI interactions (hover menus, React state changes), prefer
+           js_eval with explicit event dispatching over simple click actions.
     """)
 
 
@@ -180,16 +217,21 @@ def generate_scenario(
         user_prompt += f"\nInclude tags: {', '.join(tags)}"
 
     try:
+        combined_prompt = f"{system_prompt}\n\n{user_prompt}"
         if backend == "codex":
             result = subprocess.run(
-                ["codex", "--quiet", "--full-context", "-p", f"{system_prompt}\n\n{user_prompt}"],
+                ["codex", "exec", "--full-auto", combined_prompt],
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
         else:
             result = subprocess.run(
-                ["claude", "-p", f"{system_prompt}\n\n{user_prompt}", "--output-format", "text"],
+                [
+                    "claude", "-p", combined_prompt,
+                    "--output-format", "text",
+                    "--allowedTools", "",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=120,

@@ -1,0 +1,191 @@
+name: kaizen_search_recipe
+description: Kaizen test — verify the search page mounts, then exercise the recipe library by creating, editing, and deleting a recipe.
+timeout: 240
+required_role: editor
+tags: [kaizen, search, recipes]
+
+steps:
+  - action: navigate
+    url: /search
+    wait_for: domcontentloaded
+
+  - action: screenshot
+    screenshot_name: search_page_loaded
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const searchInput = document.querySelector(
+          "input[type='search'], input[placeholder*='search' i], input[name='search'], [data-testid='search-input']"
+        );
+        if (!searchInput) {
+          return 'ERROR: /search is not mounted in this deployment';
+        }
+        const recipesTab = [...document.querySelectorAll('button')].find((btn) => {
+          const text = (btn.textContent || '').trim();
+          return text.includes('Recipes');
+        });
+        if (!recipesTab) {
+          return 'ERROR: recipes tab not visible on /search';
+        }
+        return 'OK: search page mounted';
+      })()
+    timeout: 10
+
+  - action: fill
+    target: search
+    value: pwd
+
+  - action: click
+    target: button:has-text('Search')
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: search_results
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+        const recipeName = `UAT Search Recipe ${stamp}`;
+        const response = await fetch('/api/recipes/', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: recipeName,
+            notes: 'Created by UAT bot to validate the recipe library.',
+            tool_name: 'terminal',
+            tool_arguments: { command: 'pwd' },
+            tool_result: { stdout: '/home/ec2-user/k8s' },
+          }),
+        });
+        const bodyText = await response.text();
+        if (!response.ok) {
+          return `ERROR: failed to seed recipe (${response.status}): ${bodyText}`;
+        }
+        const recipe = JSON.parse(bodyText);
+        localStorage.setItem('uatSearchRecipeId', recipe.id);
+        localStorage.setItem('uatSearchRecipeName', recipe.name || recipeName);
+        window.location.reload();
+        return `OK: seeded recipe ${recipe.id}`;
+      })()
+    timeout: 15
+
+  - action: wait_for
+    wait_for: domcontentloaded
+    timeout: 20
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const recipesTab = [...document.querySelectorAll('button')].find((btn) => {
+          const text = (btn.textContent || '').trim();
+          return text.includes('Recipes');
+        });
+        if (!recipesTab) return 'ERROR: Recipes tab not found';
+        recipesTab.click();
+        return 'OK: opened recipes tab';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: recipes_tab
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const recipeName = localStorage.getItem('uatSearchRecipeName');
+        if (!recipeName) return 'ERROR: seeded recipe name missing from window state';
+        const editButton = [...document.querySelectorAll('button[title="Edit"]')].find((btn) => {
+          const card = btn.closest('div');
+          return card && (card.textContent || '').includes(recipeName);
+        }) || [...document.querySelectorAll('button')].find((btn) => {
+          const text = (btn.textContent || '').trim();
+          return text === 'Edit';
+        });
+        if (!editButton) return 'ERROR: Edit button not found for seeded recipe';
+        editButton.click();
+        return 'OK: opened edit recipe modal';
+      })()
+    timeout: 15
+
+  - action: sleep
+    timeout: 2
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const inputs = [...document.querySelectorAll('input, textarea')];
+        const nameField = inputs.find((el) => el.tagName.toLowerCase() === 'input' && el.offsetParent !== null);
+        if (!nameField) return 'ERROR: edit recipe name field not found';
+        const proto = nameField instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        setter.call(nameField, 'UAT Search Recipe Updated');
+        nameField.dispatchEvent(new Event('input', { bubbles: true }));
+        nameField.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'OK: updated recipe name';
+      })()
+    timeout: 15
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const update = [...document.querySelectorAll('button')].find((btn) => {
+          const text = (btn.textContent || '').trim();
+          return text === 'Update';
+        });
+        if (!update) return 'ERROR: Update button not found in edit recipe modal';
+        update.click();
+        return 'OK: saved recipe update';
+      })()
+    timeout: 15
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: recipe_updated
+
+  - action: js_eval
+    value: |
+      (async () => {
+        window.confirm = () => true;
+        const recipeName = localStorage.getItem('uatSearchRecipeName');
+        const deleteButton = [...document.querySelectorAll('button[title="Delete"]')].find((btn) => {
+          const card = btn.closest('div');
+          return card && (card.textContent || '').includes(recipeName || '');
+        }) || [...document.querySelectorAll('button')].find((btn) => {
+          const text = (btn.textContent || '').trim();
+          return text === 'Delete';
+        });
+        if (!deleteButton) return 'ERROR: Delete button not found for seeded recipe';
+        deleteButton.click();
+        return 'OK: requested recipe deletion';
+      })()
+    timeout: 15
+
+  - action: sleep
+    timeout: 2
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const recipeName = localStorage.getItem('uatSearchRecipeName');
+        if (!recipeName) return 'ERROR: seeded recipe name missing from window state';
+        const stillVisible = [...document.querySelectorAll('button, div, h3, span')]
+          .some((el) => (el.textContent || '').includes(recipeName));
+        if (stillVisible) return 'ERROR: seeded recipe still visible after deletion';
+        return 'OK: seeded recipe deleted';
+      })()
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: recipe_deleted

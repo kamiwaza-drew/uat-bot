@@ -125,6 +125,7 @@ class ScenarioGenerateRequest(BaseModel):
     prompt: str
     name: str | None = None
     tags: list[str] = Field(default_factory=list)
+    backend: str | None = None
 
 
 class ScenarioGenerateResponse(BaseModel):

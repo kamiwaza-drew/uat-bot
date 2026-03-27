@@ -1,0 +1,133 @@
+name: make_new_user
+description: Create a new user via settings, log out, then log in as the new user
+  to verify access.
+timeout: 300
+required_role: admin
+tags:
+- auth
+- user_management
+steps:
+- action: screenshot
+  screenshot_name: dashboard_start
+- action: navigate
+  url: /settings
+  wait_for: networkidle
+  validate:
+  - no_errors: true
+  - vision: A settings or admin page is displayed
+- action: screenshot
+  screenshot_name: settings_page
+- action: js_eval
+  value: "(async () => {\n  const links = document.querySelectorAll('a, button, [role=\"\
+    tab\"]');\n  for (const el of links) {\n    const text = (el.textContent || '').trim().toLowerCase();\n\
+    \    if (text.includes('user')) {\n      el.click();\n      return 'OK: Clicked\
+    \ users tab/link: ' + el.textContent.trim();\n    }\n  }\n  return 'ERROR: No\
+    \ users tab or link found. Available: ' + Array.from(links).map(e => (e.textContent\
+    \ || '').trim().substring(0, 30)).filter(Boolean).join(', ');\n})()\n"
+  timeout: 10
+- action: wait_for
+  wait_for: networkidle
+  timeout: 15
+- action: screenshot
+  screenshot_name: users_section
+- action: js_eval
+  value: "(async () => {\n  const buttons = document.querySelectorAll('button, a');\n\
+    \  for (const btn of buttons) {\n    const text = (btn.textContent || '').trim().toLowerCase();\n\
+    \    if (text.includes('add user') || text.includes('create user') || text.includes('new\
+    \ user') || text.includes('invite user')) {\n      btn.click();\n      return\
+    \ 'OK: Clicked add/create user button: ' + btn.textContent.trim();\n    }\n  }\n\
+    \  return 'ERROR: No add/create user button found. Buttons: ' + Array.from(buttons).map(b\
+    \ => (b.textContent || '').trim().substring(0, 40)).filter(Boolean).join(', ');\n\
+    })()\n"
+  timeout: 10
+- action: wait_for
+  wait_for: networkidle
+  timeout: 15
+- action: screenshot
+  screenshot_name: create_user_form
+- action: js_eval
+  value: "(async () => {\n  const inputs = document.querySelectorAll('input');\n \
+    \ let filled = [];\n  for (const input of inputs) {\n    const name = (input.name\
+    \ || input.placeholder || input.id || '').toLowerCase();\n    const label = input.closest('label,\
+    \ div, .form-group');\n    const labelText = label ? (label.textContent || '').toLowerCase()\
+    \ : '';\n    if (name.includes('username') || name.includes('user_name') || labelText.includes('username'))\
+    \ {\n      input.focus();\n      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,\
+    \ 'value').set;\n      nativeSet.call(input, 'uat_testuser_' + Date.now().toString(36));\n\
+    \      input.dispatchEvent(new Event('input', { bubbles: true }));\n      input.dispatchEvent(new\
+    \ Event('change', { bubbles: true }));\n      filled.push('username=' + input.value);\n\
+    \    } else if (name.includes('email') || labelText.includes('email')) {\n   \
+    \   input.focus();\n      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,\
+    \ 'value').set;\n      nativeSet.call(input, 'uat_test_' + Date.now().toString(36)\
+    \ + '@test.local');\n      input.dispatchEvent(new Event('input', { bubbles: true\
+    \ }));\n      input.dispatchEvent(new Event('change', { bubbles: true }));\n \
+    \     filled.push('email=' + input.value);\n    } else if (name.includes('password')\
+    \ || input.type === 'password' || labelText.includes('password')) {\n      input.focus();\n\
+    \      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,\
+    \ 'value').set;\n      nativeSet.call(input, 'UatTest!2026secure');\n      input.dispatchEvent(new\
+    \ Event('input', { bubbles: true }));\n      input.dispatchEvent(new Event('change',\
+    \ { bubbles: true }));\n      filled.push('password=***');\n    }\n  }\n  if (filled.length\
+    \ === 0) return 'ERROR: No recognizable form fields found. Inputs: ' + Array.from(inputs).map(i\
+    \ => i.name || i.placeholder || i.type).join(', ');\n  return 'OK: Filled fields:\
+    \ ' + filled.join(', ');\n})()\n"
+  timeout: 10
+- action: screenshot
+  screenshot_name: user_form_filled
+- action: js_eval
+  value: "(async () => {\n  const buttons = document.querySelectorAll('button[type=\"\
+    submit\"], button');\n  for (const btn of buttons) {\n    const text = (btn.textContent\
+    \ || '').trim().toLowerCase();\n    if (text.includes('create') || text.includes('save')\
+    \ || text.includes('add') || text.includes('submit')) {\n      btn.click();\n\
+    \      return 'OK: Clicked submit button: ' + btn.textContent.trim();\n    }\n\
+    \  }\n  return 'ERROR: No submit/create button found. Buttons: ' + Array.from(buttons).map(b\
+    \ => (b.textContent || '').trim().substring(0, 30)).join(', ');\n})()\n"
+  timeout: 10
+- action: wait_for
+  wait_for: networkidle
+  timeout: 20
+- action: screenshot
+  screenshot_name: user_created
+  validate:
+  - no_errors: true
+  - vision: The new user has been created successfully, shown in a user list or a
+      success message is displayed
+- action: js_eval
+  value: "(async () => {\n  const profileBtns = document.querySelectorAll('button,\
+    \ a, [role=\"button\"]');\n  for (const el of profileBtns) {\n    const text =\
+    \ (el.textContent || '').trim().toLowerCase();\n    if (text.includes('logout')\
+    \ || text.includes('log out') || text.includes('sign out')) {\n      el.click();\n\
+    \      return 'OK: Clicked logout directly';\n    }\n  }\n  // Try avatar / profile\
+    \ menu in top-right\n  const avatars = document.querySelectorAll('img[alt*=\"\
+    avatar\"], img[alt*=\"profile\"], [class*=\"avatar\"], [class*=\"profile\"] button,\
+    \ header button:last-child, nav button:last-child');\n  for (const av of avatars)\
+    \ {\n    av.click();\n    await new Promise(r => setTimeout(r, 500));\n    const\
+    \ menuItems = document.querySelectorAll('button, a, [role=\"menuitem\"]');\n \
+    \   for (const mi of menuItems) {\n      const t = (mi.textContent || '').trim().toLowerCase();\n\
+    \      if (t.includes('logout') || t.includes('log out') || t.includes('sign out'))\
+    \ {\n        mi.click();\n        return 'OK: Clicked logout from profile menu';\n\
+    \      }\n    }\n  }\n  return 'ERROR: No logout button or profile menu found';\n\
+    })()\n"
+  timeout: 15
+- action: wait_for
+  wait_for: networkidle
+  timeout: 20
+- action: screenshot
+  screenshot_name: logged_out
+  validate:
+  - vision: A login page or login form is displayed with username and password fields
+- action: fill
+  target: username
+  value: '{{new_username}}'
+- action: fill
+  target: password
+  value: UatTest!2026secure
+- action: click
+  target: submit
+- action: wait_for
+  wait_for: networkidle
+  timeout: 20
+- action: screenshot
+  screenshot_name: new_user_logged_in
+  validate:
+  - no_errors: true
+  - vision: The new user is logged in and seeing a dashboard or home page, not a login
+      screen or error

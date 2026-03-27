@@ -14,6 +14,7 @@ from uat_bot.core.run_state import RunState
 from uat_bot.core.user_manager import KamiwazaUserManager
 from uat_bot.core.worker import Worker
 from uat_bot.models import RunCreateRequest, RunDetail, RunStatus, RunSummary
+from uat_bot.reporting.analyzer import RunAnalyzer
 from uat_bot.reporting.generator import ReportGenerator
 from uat_bot.scenarios.uat_context import UATContextLoader
 from uat_bot.stress.planner import AssignmentPlanner
@@ -254,8 +255,23 @@ class StressOrchestrator:
                 except Exception as cleanup_exc:  # noqa: BLE001
                     state.errors.append(f"cleanup error: {cleanup_exc}")
 
+            # Run AI analysis on screenshots via claude/codex CLI
+            ai_analysis = None
             try:
-                state.report_path = await self.reporter.generate(state.run_id, state.root_dir)
+                analyzer = RunAnalyzer()
+                ai_analysis = await analyzer.analyze_run(state.root_dir)
+                if ai_analysis.error != "no_backend":
+                    await state.emit(
+                        "ai.analysis_complete",
+                        {"verdict": ai_analysis.overall_verdict},
+                    )
+            except Exception as analysis_exc:  # noqa: BLE001
+                state.errors.append(f"ai analysis error: {analysis_exc}")
+
+            try:
+                state.report_path = await self.reporter.generate(
+                    state.run_id, state.root_dir, ai_analysis=ai_analysis,
+                )
             except Exception as report_exc:  # noqa: BLE001
                 state.errors.append(f"report error: {report_exc}")
 

@@ -93,3 +93,15 @@ def test_runtime_config_defaults_admin_credentials_when_missing():
     assert cfg.admin_user == "admin"
     assert cfg.admin_password == "kamiwaza"
     assert cfg.source == "default"
+
+
+def test_api_base_url_for_user_admin_strips_runtime_app_path():
+    url = "https://test.kamiwaza.dev/runtime/apps/kaizen-mncpbftx-716a7143/"
+    normalized = KamiwazaUserManager._api_base_url_for_user_admin(url)
+    assert normalized == "https://test.kamiwaza.dev"
+
+
+def test_api_base_url_for_user_admin_preserves_prefix_before_runtime_apps():
+    url = "https://example.com/platform/runtime/apps/kaizen-123"
+    normalized = KamiwazaUserManager._api_base_url_for_user_admin(url)
+    assert normalized == "https://example.com/platform"

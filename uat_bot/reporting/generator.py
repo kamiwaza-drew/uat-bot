@@ -13,6 +13,7 @@ class ReportGenerator:
         run_id: str,
         run_dir: Path,
         ai_analysis: AnalysisReport | None = None,
+        auto_refresh_seconds: int = 0,
     ) -> Path:
         metrics_path = run_dir / "metrics.jsonl"
         rows: list[dict] = []
@@ -52,6 +53,7 @@ class ReportGenerator:
             screenshot_paths=screenshot_rel_paths,
             events=events,
             ai_analysis=ai_analysis,
+            auto_refresh_seconds=max(0, int(auto_refresh_seconds or 0)),
         )
         report_path = run_dir / "report.html"
         report_path.write_text(report_html, encoding="utf-8")
@@ -214,6 +216,7 @@ class ReportGenerator:
         screenshot_paths: list[str],
         events: list[dict],
         ai_analysis: AnalysisReport | None = None,
+        auto_refresh_seconds: int = 0,
     ) -> str:
         error_count = sum(1 for row in rows if row.get("status") == "error")
         ok_count = sum(1 for row in rows if row.get("status") == "ok")
@@ -224,6 +227,13 @@ class ReportGenerator:
         events_json = json.dumps(events, ensure_ascii=True)
 
         ai_section = self._render_ai_analysis(ai_analysis, run_id)
+        auto_refresh_notice = ""
+        if auto_refresh_seconds > 0:
+            auto_refresh_notice = (
+                "<p style='margin:0 0 12px;color:#0f766e;font-size:13px;'>"
+                f"Run is active. This report auto-refreshes every {auto_refresh_seconds}s."
+                "</p>"
+            )
 
         return f"""<!doctype html>
 <html>
@@ -283,6 +293,7 @@ class ReportGenerator:
     <div><strong>Screenshots:</strong> {len(screenshot_paths)}</div>
     <div><strong>Events Logged:</strong> {len(events)}</div>
   </div>
+  {auto_refresh_notice}
 
   {ai_section}
 
@@ -332,9 +343,11 @@ class ReportGenerator:
 
 <script>
 const RUN_ID = {json.dumps(run_id)};
-const ALL_SHOTS = {screenshots_json};
-const ALL_METRICS = {metrics_json};
-const ALL_EVENTS = {events_json};
+const AUTO_REFRESH_SECONDS = {int(auto_refresh_seconds)};
+const SNAPSHOT_URL = "/runs/" + RUN_ID + "/snapshot";
+let ALL_SHOTS = {screenshots_json};
+let ALL_METRICS = {metrics_json};
+let ALL_EVENTS = {events_json};
 
 function esc(v) {{
   return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -474,14 +487,8 @@ function renderMetrics() {{
 }}
 
 function initMetricFilters() {{
-  const actions = new Set();
-  ALL_METRICS.forEach(function(r) {{ if (r.action) actions.add(r.action); }});
   const actionSel = document.getElementById("metrics-action-filter");
-  Array.from(actions).sort().forEach(function(a) {{
-    const opt = document.createElement("option");
-    opt.value = a; opt.textContent = a;
-    actionSel.appendChild(opt);
-  }});
+  syncMetricActionOptions(actionSel);
 
   document.getElementById("metrics-status-filter").addEventListener("change", function(e) {{
     metricStatusFilter = e.target.value; metricPage = 1; renderMetrics();
@@ -489,6 +496,25 @@ function initMetricFilters() {{
   actionSel.addEventListener("change", function(e) {{
     metricActionFilter = e.target.value; metricPage = 1; renderMetrics();
   }});
+}}
+
+function syncMetricActionOptions(actionSel) {{
+  const currentValue = actionSel.value || "";
+  const actions = new Set();
+  ALL_METRICS.forEach(function(r) {{ if (r.action) actions.add(r.action); }});
+  actionSel.innerHTML = '<option value="">All</option>';
+  Array.from(actions).sort().forEach(function(a) {{
+    const opt = document.createElement("option");
+    opt.value = a;
+    opt.textContent = a;
+    actionSel.appendChild(opt);
+  }});
+  if (currentValue && Array.from(actions).includes(currentValue)) {{
+    actionSel.value = currentValue;
+  }} else {{
+    actionSel.value = "";
+    metricActionFilter = "";
+  }}
 }}
 
 /* ---- Events ---- */
@@ -517,11 +543,64 @@ function renderEvents() {{
   }}).join("");
 }}
 
+function samePaths(a, b) {{
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {{
+    if (a[i] !== b[i]) return false;
+  }}
+  return true;
+}}
+
+function hasSnapshotChanged(next) {{
+  if (!next) return false;
+  if (!samePaths(ALL_SHOTS, next.screenshots || [])) return true;
+  const nextMetrics = next.metrics || [];
+  const nextEvents = next.events || [];
+  if (ALL_METRICS.length !== nextMetrics.length || ALL_EVENTS.length !== nextEvents.length) {{
+    return true;
+  }}
+  const lastMetric = ALL_METRICS[ALL_METRICS.length - 1];
+  const nextLastMetric = nextMetrics[nextMetrics.length - 1];
+  const lastEvent = ALL_EVENTS[ALL_EVENTS.length - 1];
+  const nextLastEvent = nextEvents[nextEvents.length - 1];
+  return JSON.stringify(lastMetric || null) !== JSON.stringify(nextLastMetric || null)
+    || JSON.stringify(lastEvent || null) !== JSON.stringify(nextLastEvent || null);
+}}
+
+let snapshotBusy = false;
+
+async function pollSnapshot() {{
+  if (snapshotBusy) return;
+  snapshotBusy = true;
+  try {{
+    const res = await fetch(SNAPSHOT_URL, {{ cache: "no-store" }});
+    if (!res.ok) return;
+    const next = await res.json();
+    if (!hasSnapshotChanged(next)) return;
+    ALL_SHOTS = Array.isArray(next.screenshots) ? next.screenshots : [];
+    ALL_METRICS = Array.isArray(next.metrics) ? next.metrics : [];
+    ALL_EVENTS = Array.isArray(next.events) ? next.events : [];
+    syncMetricActionOptions(document.getElementById("metrics-action-filter"));
+    renderShots();
+    renderMetrics();
+    renderEvents();
+  }} catch (_err) {{
+    // ignore transient poll failures
+  }} finally {{
+    snapshotBusy = false;
+  }}
+}}
+
 /* ---- Boot ---- */
 renderShots();
 initMetricFilters();
 renderMetrics();
 renderEvents();
+if (AUTO_REFRESH_SECONDS > 0) {{
+  window.setInterval(function() {{
+    pollSnapshot();
+  }}, AUTO_REFRESH_SECONDS * 1000);
+}}
 </script>
 </body>
 </html>"""

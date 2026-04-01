@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
-from uat_bot.models import RunCreateRequest
+from uat_bot.models import RunCreateRequest, RunStatus
 from uat_bot.reporting.analyzer import RunAnalyzer
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -61,9 +62,7 @@ async def purge_run(run_id: str, request: Request):
 def _resolve_run_dir(run_id: str, request: Request) -> Path | None:
     """Resolve the run directory from in-memory state or fallback to disk."""
     orchestrator = _orchestrator(request)
-    import asyncio
 
-    loop = asyncio.get_event_loop()
     # Try in-memory state first (can't await here, use sync check)
     state = orchestrator._runs.get(run_id)
     if state:
@@ -75,6 +74,50 @@ def _resolve_run_dir(run_id: str, request: Request) -> Path | None:
     return None
 
 
+def _collect_run_snapshot(run_dir: Path) -> dict[str, object]:
+    metrics_path = run_dir / "metrics.jsonl"
+    events_path = run_dir / "events.jsonl"
+    screenshots_dir = run_dir / "screenshots"
+
+    metrics: list[dict] = []
+    events: list[dict] = []
+    screenshots: list[str] = []
+
+    if metrics_path.exists():
+        for line in metrics_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                metrics.append(payload)
+
+    if events_path.exists():
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+
+    if screenshots_dir.exists():
+        for path in sorted(screenshots_dir.rglob("*.png")) + sorted(screenshots_dir.rglob("*.jpg")):
+            screenshots.append(path.relative_to(run_dir).as_posix())
+
+    return {
+        "metrics": metrics,
+        "events": events,
+        "screenshots": screenshots,
+    }
+
+
 @router.get("/{run_id}/report", response_class=HTMLResponse)
 async def get_report(run_id: str, request: Request):
     orchestrator = _orchestrator(request)
@@ -82,10 +125,22 @@ async def get_report(run_id: str, request: Request):
 
     if state:
         report_path = state.report_path
-        if not report_path or not report_path.exists():
-            report_path = await orchestrator.reporter.generate(run_id, state.root_dir)
+        is_active = state.status in {RunStatus.pending, RunStatus.running}
+        if is_active or not report_path or not report_path.exists():
+            report_path = await orchestrator.reporter.generate(
+                run_id,
+                state.root_dir,
+                auto_refresh_seconds=5 if is_active else 0,
+            )
             state.report_path = report_path
-        return HTMLResponse(content=report_path.read_text(encoding="utf-8"))
+        headers = {}
+        if is_active:
+            headers = {
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+        return HTMLResponse(content=report_path.read_text(encoding="utf-8"), headers=headers)
 
     # Fallback: serve from disk for historical runs
     run_dir = _resolve_run_dir(run_id, request)
@@ -96,6 +151,29 @@ async def get_report(run_id: str, request: Request):
     if not report_path.exists():
         report_path = await orchestrator.reporter.generate(run_id, run_dir)
     return HTMLResponse(content=report_path.read_text(encoding="utf-8"))
+
+
+@router.get("/{run_id}/snapshot")
+async def run_snapshot(run_id: str, request: Request):
+    orchestrator = _orchestrator(request)
+    state = await orchestrator.get_run(run_id)
+
+    active = False
+    status = None
+    if state:
+        run_dir = state.root_dir
+        status = state.status.value
+        active = state.status in {RunStatus.pending, RunStatus.running}
+    else:
+        run_dir = _resolve_run_dir(run_id, request)
+        if not run_dir:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+    snapshot = _collect_run_snapshot(run_dir)
+    snapshot["run_id"] = run_id
+    snapshot["status"] = status
+    snapshot["active"] = active
+    return snapshot
 
 
 @router.post("/{run_id}/analyze")

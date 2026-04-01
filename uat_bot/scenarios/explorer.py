@@ -7,10 +7,10 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import Page, async_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ async def explore_and_build(
     backend: str = "claude",
     max_steps: int = MAX_STEPS,
     on_step: Any | None = None,
+    on_event: Any | None = None,
 ) -> ExplorationResult:
     """Launch a browser, let the LLM explore interactively, and build a scenario.
 
@@ -58,8 +59,22 @@ async def explore_and_build(
         backend: LLM CLI backend ("claude" or "codex").
         max_steps: Maximum exploration steps.
         on_step: Optional async callback(step_num, description) for progress.
+        on_event: Optional async callback(event_dict) for rich log events.
     """
     result = ExplorationResult()
+
+    async def emit_event(event: str, message: str, payload: dict[str, Any] | None = None) -> None:
+        if not on_event:
+            return
+        await on_event(
+            {
+                "type": "log",
+                "event": event,
+                "message": message,
+                "payload": payload or {},
+                "ts": datetime.now(UTC).isoformat(),
+            }
+        )
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -73,30 +88,58 @@ async def explore_and_build(
             # Step 1: Navigate to the app
             if on_step:
                 await on_step(0, "Navigating to app")
+            await emit_event("browse.navigate", "Opening target app URL", {"target_url": target_url})
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
             await asyncio.sleep(2)
+            await emit_event(
+                "browse.navigate.complete",
+                "Initial app page loaded",
+                {"page_url": page.url},
+            )
 
             # Step 2: Handle login if we see a login page
             if on_step:
                 await on_step(1, "Checking for login page")
+            await emit_event("browse.login.check", "Checking page for login form")
             logged_in = await _try_login(page, username, password)
             if logged_in:
+                await emit_event(
+                    "browse.login.success",
+                    "Login form detected and submitted",
+                    {"page_url": page.url},
+                )
                 result.steps.append(ExplorerStep(
                     action="login", result="Logged in successfully",
                     page_url=page.url,
                 ))
+            else:
+                await emit_event(
+                    "browse.login.skip",
+                    "No login form detected; continuing exploration",
+                    {"page_url": page.url},
+                )
 
             # Step 3: Interactive exploration loop
             conversation: list[dict[str, str]] = []
             for step_num in range(max_steps):
                 if on_step:
                     await on_step(step_num + 2, f"Exploring step {step_num + 1}")
+                await emit_event(
+                    "step.begin",
+                    f"Exploration step {step_num + 1} of {max_steps}",
+                    {"step_num": step_num + 1, "max_steps": max_steps, "page_url": page.url},
+                )
 
                 # Take screenshot
                 screenshot_bytes = await page.screenshot()
 
                 # Get simplified page info
                 page_info = await _get_page_info(page)
+                await emit_event(
+                    "browse.page_snapshot",
+                    "Captured current page context for the model",
+                    {"summary": _summarize_page_info(page_info)},
+                )
 
                 # Ask the LLM what to do next
                 llm_response = await _ask_llm(
@@ -110,28 +153,65 @@ async def explore_and_build(
                 )
 
                 if not llm_response:
+                    await emit_event(
+                        "think.empty",
+                        "Model returned an empty response",
+                        {"step_num": step_num + 1},
+                    )
                     result.errors.append(f"LLM returned empty response at step {step_num}")
                     break
 
                 conversation.append({"role": "assistant", "content": llm_response})
+                await emit_event(
+                    "think.response",
+                    "Model proposed the next action",
+                    {"raw_response": llm_response},
+                )
 
                 # Parse the LLM's action
                 action = _parse_action(llm_response)
                 if action is None:
+                    await emit_event(
+                        "think.parse_error",
+                        "Could not parse model response into a valid action",
+                        {"step_num": step_num + 1, "raw_response": llm_response},
+                    )
                     result.errors.append(f"Could not parse action from LLM at step {step_num}")
                     break
+
+                redacted_action = _redact_action(action)
+                await emit_event(
+                    "think.action",
+                    f"Model chose action: {action.get('type', 'unknown')}",
+                    {"action": redacted_action, "reason": action.get("reason", "")},
+                )
 
                 # Check if the LLM says we're done
                 if action["type"] == "done":
                     if on_step:
                         await on_step(step_num + 2, "LLM reports task complete")
+                    await emit_event(
+                        "think.done",
+                        "Model reported the task as complete",
+                        {"reason": action.get("reason", "")},
+                    )
                     result.success = True
                     break
 
                 # Execute the action
+                await emit_event(
+                    "browse.execute",
+                    f"Executing action: {action.get('type', 'unknown')}",
+                    {"action": redacted_action},
+                )
                 step = await _execute_action(page, action)
                 step.page_url = page.url
                 result.steps.append(step)
+                await emit_event(
+                    "browse.result",
+                    "Action execution completed",
+                    {"result": step.result, "page_url": page.url},
+                )
 
                 # Brief wait for page to settle
                 await asyncio.sleep(1)
@@ -144,6 +224,7 @@ async def explore_and_build(
             # Step 4: Generate scenario YAML from the exploration
             if on_step:
                 await on_step(max_steps + 2, "Generating scenario YAML")
+            await emit_event("yaml.start", "Generating scenario YAML from exploration steps")
 
             final_screenshot = await page.screenshot()
             yaml_content = await _generate_yaml(
@@ -154,6 +235,11 @@ async def explore_and_build(
                 target_url=target_url,
             )
             result.yaml_content = yaml_content
+            await emit_event(
+                "yaml.complete",
+                "Scenario YAML generation completed",
+                {"yaml_preview": _truncate_text(yaml_content, 1000), "step_count": len(result.steps)},
+            )
 
             await context.close()
         finally:
@@ -489,3 +575,49 @@ def _extract_yaml(text: str) -> str:
         if line.strip().startswith("name:"):
             return "\n".join(lines[i:]).strip()
     return text.strip()
+
+
+def _truncate_text(value: str, limit: int = 1200) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... [truncated {len(text) - limit} chars]"
+
+
+def _summarize_page_info(page_info: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(page_info)
+    except json.JSONDecodeError:
+        return {"raw": _truncate_text(page_info, 600)}
+
+    elements = parsed.get("elements", [])
+    top_elements = []
+    for item in elements[:8]:
+        top_elements.append(
+            {
+                "tag": item.get("tag"),
+                "selector": item.get("selector"),
+                "text": _truncate_text(item.get("text", ""), 80),
+                "placeholder": _truncate_text(item.get("placeholder", ""), 80),
+            }
+        )
+
+    return {
+        "url": parsed.get("url"),
+        "title": parsed.get("title"),
+        "visible_interactables": len(elements),
+        "top_elements": top_elements,
+    }
+
+
+def _redact_action(action: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(action)
+    value = redacted.get("value")
+    selector = str(redacted.get("selector", "")).lower()
+    if isinstance(value, str):
+        looks_sensitive = "password" in selector or "token" in selector or "secret" in selector
+        if looks_sensitive:
+            redacted["value"] = "[redacted]"
+        elif len(value) > 180:
+            redacted["value"] = _truncate_text(value, 180)
+    return redacted

@@ -4,1857 +4,596 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>UAT Bot Control Center</title>
-  <style>
-    :root {
-      --bg: #f2f7f5;
-      --panel: #ffffff;
-      --ink: #10211f;
-      --muted: #4d6460;
-      --line: #d6e2df;
-      --brand: #0e7a63;
-      --brand-2: #0a5e4d;
-      --warn: #b35a00;
-      --err: #b42318;
-      --ok: #117f2d;
-      --shadow: 0 10px 24px rgba(16, 33, 31, 0.08);
-    }
-
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-      color: var(--ink);
-      background: radial-gradient(circle at 0% 0%, #dff5ee 0%, var(--bg) 45%);
-      overflow-x: hidden;
-    }
-
-    .shell {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 24px;
-      display: grid;
-      grid-template-columns: 370px 1fr;
-      gap: 18px;
-    }
-
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: var(--shadow);
-      padding: 16px;
-      min-width: 0;
-    }
-
-    h1 {
-      margin: 0;
-      font-size: 28px;
-      letter-spacing: 0.2px;
-    }
-
-    .sub {
-      margin: 4px 0 0;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .header {
-      grid-column: 1 / -1;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-
-    .pill {
-      font-size: 12px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      padding: 6px 10px;
-      background: #f9fcfb;
-      color: var(--muted);
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--ok);
-      display: inline-block;
-    }
-
-    .section-title {
-      margin: 0 0 12px;
-      font-size: 15px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }
-
-    .grid2 {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-
-    label {
-      font-size: 12px;
-      color: var(--muted);
-      display: block;
-      margin-bottom: 5px;
-    }
-
-    input, select, textarea, button {
-      font: inherit;
-    }
-
-    input, select, textarea {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px 10px;
-      background: #fff;
-      color: var(--ink);
-    }
-
-    textarea { min-height: 72px; resize: vertical; }
-
-    .actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }
-
-    button {
-      border: none;
-      border-radius: 10px;
-      padding: 10px 12px;
-      cursor: pointer;
-      font-weight: 600;
-    }
-
-    .btn-primary { background: var(--brand); color: #fff; }
-    .btn-primary:hover { background: var(--brand-2); }
-    .btn-secondary { background: #eef3f2; color: var(--ink); }
-    .btn-danger { background: #ffe8e8; color: var(--err); }
-    .btn-icon {
-      width: 32px;
-      height: 32px;
-      padding: 0;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 8px;
-    }
-    .btn-icon svg { width: 16px; height: 16px; fill: currentColor; }
-
-    .main-stack {
-      display: grid;
-      grid-template-rows: auto auto auto;
-      gap: 16px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
-
-    th, td {
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      padding: 8px 6px;
-      vertical-align: top;
-    }
-
-    th { color: var(--muted); font-weight: 600; }
-
-    .status {
-      font-size: 11px;
-      font-weight: 700;
-      border-radius: 999px;
-      padding: 4px 8px;
-      display: inline-block;
-      border: 1px solid;
-    }
-
-    .PENDING { color: #6a7280; border-color: #c2c9d3; background: #f3f6fa; }
-    .RUNNING { color: #0b6e8e; border-color: #99d8ef; background: #e9f8ff; }
-    .COMPLETED { color: var(--ok); border-color: #98dbab; background: #ecfdf1; }
-    .FAILED, .CANCELLED { color: var(--err); border-color: #f3b0b0; background: #fff0f0; }
-
-    .layout-2 {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-    .layout-2 > * { min-width: 0; }
-
-    .panel-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    pre {
-      margin: 0;
-      padding: 12px;
-      border-radius: 10px;
-      background: #f7fbfa;
-      border: 1px solid var(--line);
-      font-size: 12px;
-      overflow: auto;
-      max-height: 320px;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    .events {
-      height: 320px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #f7fbfa;
-      padding: 10px;
-      font-size: 12px;
-    }
-
-    .event-row { margin: 0 0 8px; }
-    .event-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-    }
-    .event-content {
-      flex: 1;
-      min-width: 0;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-    .event-type { font-weight: 700; color: var(--brand-2); }
-    .event-ts { color: var(--muted); margin-right: 6px; }
-    .btn-copy {
-      width: 26px;
-      height: 26px;
-      border-radius: 6px;
-      padding: 0;
-      flex: 0 0 auto;
-    }
-    .btn-copy svg {
-      width: 14px;
-      height: 14px;
-      fill: currentColor;
-    }
-
-    .shots {
-      margin-top: 12px;
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 10px;
-    }
-
-    .shot {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      overflow: hidden;
-      background: #fff;
-      text-decoration: none;
-      color: inherit;
-      cursor: pointer;
-      transition: transform 0.15s, box-shadow 0.15s;
-    }
-    .shot:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 16px rgba(0,0,0,0.12);
-    }
-
-    .shot img {
-      width: 100%;
-      display: block;
-      aspect-ratio: 16 / 10;
-      object-fit: cover;
-      background: #e9efed;
-    }
-
-    .shot div {
-      font-size: 11px;
-      padding: 8px;
-      word-break: break-all;
-      color: var(--muted);
-    }
-
-    /* Lightbox gallery overlay */
-    .lightbox {
-      display: none;
-      position: fixed;
-      inset: 0;
-      z-index: 9999;
-      background: rgba(0,0,0,0.88);
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-    }
-    .lightbox.open { display: flex; }
-    .lightbox img {
-      max-width: 92vw;
-      max-height: 80vh;
-      border-radius: 8px;
-      box-shadow: 0 8px 40px rgba(0,0,0,0.5);
-    }
-    .lightbox .lb-caption {
-      color: #ccc;
-      font-size: 13px;
-      margin-top: 10px;
-      text-align: center;
-    }
-    .lightbox .lb-counter {
-      color: #888;
-      font-size: 12px;
-      margin-top: 4px;
-    }
-    .lightbox .lb-nav {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      background: rgba(255,255,255,0.15);
-      border: none;
-      color: #fff;
-      font-size: 32px;
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.2s;
-    }
-    .lightbox .lb-nav:hover { background: rgba(255,255,255,0.3); }
-    .lightbox .lb-prev { left: 16px; }
-    .lightbox .lb-next { right: 16px; }
-    .lightbox .lb-close {
-      position: absolute;
-      top: 16px;
-      right: 16px;
-      background: rgba(255,255,255,0.15);
-      border: none;
-      color: #fff;
-      font-size: 24px;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .lightbox .lb-close:hover { background: rgba(255,255,255,0.3); }
-
-    .type-badge {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-weight: 600;
-      letter-spacing: 0.03em;
-    }
-    .type-badge.kaizen {
-      background: #0e7a6320;
-      color: var(--brand);
-    }
-    .type-badge.kamiwaza {
-      background: #3b82f620;
-      color: #2563eb;
-    }
-
-    .message {
-      margin-top: 8px;
-      font-size: 12px;
-      min-height: 18px;
-    }
-
-    .path-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      margin-top: 6px;
-    }
-    .path-item {
-      display: flex;
-      gap: 10px;
-      align-items: flex-start;
-      padding: 10px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fbfefd;
-      margin-bottom: 0;
-    }
-    .path-item input[type="checkbox"] {
-      width: auto;
-      margin-top: 2px;
-      flex: 0 0 auto;
-    }
-    .path-title {
-      font-size: 13px;
-      color: var(--ink);
-      font-weight: 600;
-      margin-bottom: 2px;
-    }
-    .path-desc {
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.35;
-    }
-    .path-preview {
-      font-size: 12px;
-      color: var(--muted);
-      margin-top: 6px;
-      line-height: 1.35;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    .mode-toggle {
-      display: flex;
-      gap: 0;
-      margin-bottom: 14px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      overflow: hidden;
-    }
-    .mode-toggle button {
-      flex: 1;
-      padding: 10px 12px;
-      border: none;
-      border-radius: 0;
-      background: #f9fcfb;
-      color: var(--muted);
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s, color 0.15s;
-    }
-    .mode-toggle button.active {
-      background: var(--brand);
-      color: #fff;
-    }
-    .mode-toggle button:not(.active):hover {
-      background: #eef3f2;
-    }
-    .mode-panel { display: none; }
-    .mode-panel.active { display: block; }
-
-    .err { color: var(--err); }
-    .ok { color: var(--ok); }
-    .warn { color: var(--warn); }
-    .run-link {
-      color: var(--brand-2);
-      text-decoration: none;
-      font-weight: 600;
-    }
-    .run-link:hover { text-decoration: underline; }
-    .run-row { cursor: pointer; }
-
-    @media (max-width: 1100px) {
-      .shell { grid-template-columns: 1fr; }
-      .layout-2 { grid-template-columns: 1fr; }
-    }
-  </style>
+  <link rel="stylesheet" href="/ui/assets/styles.css" />
 </head>
 <body>
-  <div class="shell">
-    <div class="header card">
+  <div class="app-shell">
+    <header class="card app-header">
       <div>
         <h1>UAT Bot Control Center</h1>
-        <p class="sub">Run stress tests, monitor progress live, and jump to reports.</p>
+        <p class="sub">Configure tests, monitor runs, and build scenarios without context switching.</p>
       </div>
-      <div class="pill"><span class="dot"></span><span id="service-status">Service online</span></div>
-    </div>
-
-    <section class="card">
-      <div class="mode-toggle">
-        <button id="mode-kaizen" class="active">Kaizen Test</button>
-        <button id="mode-stress">Stress Test</button>
-        <button id="mode-builder">UAT Builder</button>
+      <div class="header-meta">
+        <span class="pill" id="service-pill"><span class="dot"></span><span id="service-status">Service online</span></span>
       </div>
+    </header>
 
-      <!-- Kaizen Test Mode Panel -->
-      <div id="panel-kaizen" class="mode-panel active">
-        <h2 class="section-title">Kaizen Test</h2>
+    <nav class="card top-nav" role="tablist" aria-label="Primary navigation" id="top-tabs">
+      <button type="button" class="top-tab active" id="tab-run-tests" role="tab" aria-selected="true" aria-controls="page-run-tests" tabindex="0" data-page="run-tests">Run Tests</button>
+      <button type="button" class="top-tab" id="tab-monitor" role="tab" aria-selected="false" aria-controls="page-monitor" tabindex="-1" data-page="monitor">Monitor Runs</button>
+      <button type="button" class="top-tab" id="tab-builder" role="tab" aria-selected="false" aria-controls="page-builder" tabindex="-1" data-page="builder">Build Scenarios</button>
+      <button type="button" class="top-tab" id="tab-settings" role="tab" aria-selected="false" aria-controls="page-settings" tabindex="-1" data-page="settings">Settings</button>
+    </nav>
 
-        <div style="margin-bottom:10px;">
-          <label for="kaizen-extension-url">Extension URL</label>
-          <input id="kaizen-extension-url" placeholder="https://test.kamiwaza.dev/runtime/apps/kaizen-xxx/" />
-        </div>
-
-        <div class="grid2">
+    <main class="page-stack">
+      <section class="card page active" id="page-run-tests" role="tabpanel" aria-labelledby="tab-run-tests">
+        <header class="page-head">
           <div>
-            <label for="kaizen-username">Username</label>
-            <input id="kaizen-username" value="admin" placeholder="admin" />
+            <h2>Run Tests</h2>
+            <p class="sub">Choose a test style, configure inputs, then launch.</p>
           </div>
-          <div>
-            <label for="kaizen-password">Password</label>
-            <input id="kaizen-password" type="password" value="kamiwaza" placeholder="password" />
+        </header>
+
+        <ol class="step-strip" aria-label="Run flow">
+          <li class="active">1. Configure</li>
+          <li>2. Start</li>
+          <li>3. Observe in Monitor Runs</li>
+        </ol>
+
+        <div class="subtab-row" role="tablist" aria-label="Run type" id="run-mode-tabs">
+          <button type="button" class="subtab active" id="mode-quick" role="tab" aria-selected="true" aria-controls="panel-quick" tabindex="0" data-mode="quick">Quick Chat Test</button>
+          <button type="button" class="subtab" id="mode-load" role="tab" aria-selected="false" aria-controls="panel-load" tabindex="-1" data-mode="load">Load Test</button>
+          <button type="button" class="subtab" id="mode-custom" role="tab" aria-selected="false" aria-controls="panel-custom" tabindex="-1" data-mode="custom">Custom Scenario Run</button>
+        </div>
+
+        <section class="subpanel active" id="panel-quick" role="tabpanel" aria-labelledby="mode-quick">
+          <div class="subpanel-head">
+            <h3>Quick Chat Test</h3>
+            <p class="sub">Use this when you want a fast, single-user validation of a Kaizen-like chat runtime.</p>
           </div>
-        </div>
 
-        <div style="margin-top:10px;">
-          <label for="kaizen-message">Test Message</label>
-          <input id="kaizen-message" value="Create a simple hello world Python script" />
-        </div>
-
-        <div class="grid2" style="margin-top:10px;">
-          <div>
-            <label for="kaizen-timeout">Response Timeout (seconds)</label>
-            <input id="kaizen-timeout" type="number" min="30" value="120" />
-          </div>
-          <div>
-            <label for="kaizen-duration">Total Duration (seconds)</label>
-            <input id="kaizen-duration" type="number" min="10" value="300" />
-          </div>
-        </div>
-
-        <div style="margin-top:10px;">
-          <label><input id="kaizen-vision" type="checkbox" /> Vision Enabled</label>
-        </div>
-
-        <div class="actions">
-          <button class="btn-primary" id="kaizen-run">Run Test</button>
-          <button class="btn-secondary" id="refresh-runs-kaizen">Refresh Runs</button>
-        </div>
-        <div class="message" id="kaizen-message-status"></div>
-      </div>
-
-      <!-- Stress Test Mode Panel -->
-      <div id="panel-stress" class="mode-panel">
-      <h2 class="section-title">Start Run</h2>
-
-      <div class="grid2">
-        <div>
-          <label for="profile">Profile Preset</label>
-          <select id="profile"></select>
-        </div>
-        <div>
-          <label for="component">Component (optional)</label>
-          <input id="component" placeholder="graphiti" />
-        </div>
-      </div>
-
-      <div style="margin-top:10px;">
-        <label for="kamiwaza-url">Kamiwaza URL (optional override, falls back to env)</label>
-        <input id="kamiwaza-url" placeholder="https://test.kamiwaza.dev" />
-      </div>
-
-      <div class="grid2" style="margin-top:10px;">
-        <div>
-          <label for="kamiwaza-admin-user">Admin User (optional override)</label>
-          <input id="kamiwaza-admin-user" placeholder="admin" />
-        </div>
-        <div>
-          <label for="kamiwaza-admin-password">Admin Password (optional override)</label>
-          <input id="kamiwaza-admin-password" type="password" placeholder="••••••••" />
-        </div>
-      </div>
-
-      <div style="margin-top:10px;">
-        <label for="kamiwaza-admin-token">Admin Token (optional override)</label>
-        <input id="kamiwaza-admin-token" type="password" placeholder="Bearer token" />
-      </div>
-
-      <div class="grid2" style="margin-top:10px;">
-        <div>
-          <label for="concurrent">Concurrent Users</label>
-          <input id="concurrent" type="number" min="1" value="3" />
-        </div>
-        <div>
-          <label for="duration">Duration (seconds)</label>
-          <input id="duration" type="number" min="10" value="120" />
-        </div>
-      </div>
-
-      <div class="grid2" style="margin-top:10px;">
-        <div>
-          <label for="ramp">Ramp-Up (seconds)</label>
-          <input id="ramp" type="number" min="0" value="10" />
-        </div>
-        <div>
-          <label for="exploratory">Exploratory % (0-1)</label>
-          <input id="exploratory" type="number" min="0" max="1" step="0.05" value="0" />
-        </div>
-      </div>
-
-      <div class="grid2" style="margin-top:10px;">
-        <div>
-          <label>Role Distribution (admin/editor/viewer)</label>
-          <div class="grid2">
-            <input id="role-admin" type="number" min="0" value="1" />
-            <input id="role-editor" type="number" min="0" value="1" />
-            <input id="role-viewer" type="number" min="0" value="1" />
-          </div>
-        </div>
-        <div>
-          <label>Browser Distribution (chromium/firefox/webkit)</label>
-          <div class="grid2">
-            <input id="browser-chromium" type="number" min="0" value="1" />
-            <input id="browser-firefox" type="number" min="0" value="1" />
-            <input id="browser-webkit" type="number" min="0" value="1" />
-          </div>
-        </div>
-      </div>
-
-      <div style="margin-top:10px;">
-        <label for="os">OS Emulation (comma separated)</label>
-        <input id="os" value="win-chrome,mac-firefox,mac-safari" />
-      </div>
-
-      <div style="margin-top:10px;">
-        <label>Scenario Paths</label>
-        <div class="path-grid">
-          <label class="path-item">
-            <input id="path-model-deploy" type="checkbox" />
-            <span>
-              <div class="path-title">Model Download / Deployment</div>
-              <div class="path-desc">Runs model browsing + deploy flows.</div>
-            </span>
-          </label>
-          <label class="path-item">
-            <input id="path-app-tool-deploy" type="checkbox" />
-            <span>
-              <div class="path-title">App &amp; Tool Deployment</div>
-              <div class="path-desc">Runs app deploy + app garden + vector DB flows.</div>
-            </span>
-          </label>
-          <label class="path-item">
-            <input id="path-user-admin" type="checkbox" />
-            <span>
-              <div class="path-title">Add / Remove Users (Admin Path)</div>
-              <div class="path-desc">Runs cluster admin + RBAC boundary user-management checks.</div>
-            </span>
-          </label>
-        </div>
-        <div class="path-preview" id="path-scenarios-preview"></div>
-      </div>
-
-      <div style="margin-top:10px;">
-        <label for="scenarios">Additional Scenarios (comma separated, optional)</label>
-        <input id="scenarios" value="login" />
-      </div>
-
-      <div style="margin-top:10px;">
-        <label for="weights">Scenario Weights JSON (optional)</label>
-        <textarea id="weights" placeholder='{"login": 1}'></textarea>
-      </div>
-
-      <div style="margin-top:10px;">
-        <label><input id="vision" type="checkbox" /> Vision Enabled</label>
-      </div>
-
-      <div class="actions">
-        <button class="btn-primary" id="start-run">Start Run</button>
-        <button class="btn-secondary" id="refresh-runs">Refresh Runs</button>
-      </div>
-      <div class="message" id="start-message"></div>
-      </div><!-- end panel-stress -->
-
-      <!-- UAT Builder Panel -->
-      <div id="panel-builder" class="mode-panel">
-        <h2 class="section-title">UAT Builder</h2>
-        <div style="margin-bottom:12px; display:flex; align-items:center; gap:12px;">
-          <label for="builder-backend-select" style="margin:0; white-space:nowrap;">Backend:</label>
-          <select id="builder-backend-select" style="padding:4px 8px; border-radius:4px; border:1px solid var(--border);">
-            <option value="">detecting...</option>
-          </select>
-          <span class="pill" id="builder-backend-badge" style="margin:0;"></span>
-        </div>
-
-        <div style="margin-bottom:10px;">
-          <label for="builder-target-url">Target App URL</label>
-          <input id="builder-target-url" placeholder="https://test.kamiwaza.dev/runtime/apps/kaizen-xxx/" />
-        </div>
-
-        <div class="grid2" style="margin-bottom:10px;">
-          <div>
-            <label for="builder-username">Username</label>
-            <input id="builder-username" value="admin" />
-          </div>
-          <div>
-            <label for="builder-password">Password</label>
-            <input id="builder-password" type="password" value="kamiwaza" />
-          </div>
-        </div>
-
-        <div style="margin-bottom:10px;">
-          <label for="builder-prompt">Describe what you want to test</label>
-          <textarea id="builder-prompt" rows="3" placeholder="e.g., Test that the settings page loads, all tabs are clickable, and no errors appear"></textarea>
-        </div>
-
-        <div class="grid2">
-          <div>
-            <label for="builder-name">Scenario Name (optional)</label>
-            <input id="builder-name" placeholder="my_settings_test" />
-          </div>
-          <div>
-            <label for="builder-tags">Tags (comma separated, optional)</label>
-            <input id="builder-tags" placeholder="settings, smoke" />
-          </div>
-        </div>
-
-        <div class="actions">
-          <button class="btn-primary" id="builder-generate">Generate (Explore App)</button>
-          <button class="btn-secondary" id="builder-generate-blind">Generate (No Browser)</button>
-        </div>
-        <div class="message" id="builder-message"></div>
-        <div id="builder-progress" style="display:none; margin-top:8px;">
-          <div style="font-size:13px; color:var(--muted);" id="builder-progress-text">Exploring...</div>
-        </div>
-
-        <div id="builder-editor-section" style="display:none; margin-top:14px;">
-          <label for="builder-yaml">Generated YAML (editable)</label>
-          <textarea id="builder-yaml" rows="16" style="font-family:monospace; font-size:12px; min-height:200px;"></textarea>
-
-          <div class="grid2" style="margin-top:8px;">
-            <div>
-              <label for="builder-save-name">Save As</label>
-              <input id="builder-save-name" placeholder="scenario_name" />
-            </div>
-            <div style="display:flex; align-items:flex-end; gap:8px;">
-              <button class="btn-primary" id="builder-save">Save Scenario</button>
-              <button class="btn-secondary" id="builder-save-run">Save &amp; Run</button>
+          <div class="form-grid one">
+            <div class="field">
+              <label for="quick-url">Extension URL (required)</label>
+              <input id="quick-url" type="url" placeholder="https://test.kamiwaza.dev/runtime/apps/kaizen-xxx/" />
             </div>
           </div>
-          <div class="message" id="builder-save-message"></div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="quick-username">Username</label>
+              <input id="quick-username" value="admin" />
+            </div>
+            <div class="field">
+              <label for="quick-password">Password</label>
+              <input id="quick-password" type="password" placeholder="password" />
+            </div>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="quick-message">Test Message</label>
+              <input id="quick-message" value="Create a simple hello world Python script" />
+            </div>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="quick-duration">Total Duration (seconds)</label>
+              <input id="quick-duration" type="number" min="10" value="300" />
+            </div>
+            <div class="field checkbox-field">
+              <label><input id="quick-vision" type="checkbox" /> Vision Enabled</label>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="button" class="btn-primary" id="quick-run-btn">Start Quick Chat Test</button>
+          </div>
+          <p class="inline-message" id="quick-msg" aria-live="polite"></p>
+        </section>
+
+        <section class="subpanel" id="panel-load" role="tabpanel" aria-labelledby="mode-load">
+          <div class="subpanel-head">
+            <h3>Load Test</h3>
+            <p class="sub">Use this when you need concurrent users and scenario-path coverage under load.</p>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="load-profile">Profile Preset</label>
+              <select id="load-profile"></select>
+            </div>
+            <div class="field">
+              <label for="load-component">Component (optional)</label>
+              <input id="load-component" placeholder="graphiti" />
+            </div>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="load-url">Kamiwaza URL (required)</label>
+              <input id="load-url" type="url" placeholder="https://test.kamiwaza.dev" />
+            </div>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="load-concurrent">Concurrent Users</label>
+              <input id="load-concurrent" type="number" min="1" value="3" />
+            </div>
+            <div class="field">
+              <label for="load-duration">Duration (seconds)</label>
+              <input id="load-duration" type="number" min="10" value="120" />
+            </div>
+          </div>
+
+          <details id="load-advanced" class="advanced-block">
+            <summary>Advanced options</summary>
+
+            <div class="form-grid two advanced-content">
+              <div class="field">
+                <label for="load-ramp">Ramp-Up (seconds)</label>
+                <input id="load-ramp" type="number" min="0" value="10" />
+              </div>
+              <div class="field">
+                <label for="load-exploratory">Exploratory % (0-1)</label>
+                <input id="load-exploratory" type="number" min="0" max="1" step="0.05" value="0" />
+              </div>
+            </div>
+
+            <div class="form-grid two advanced-content">
+              <div class="field">
+                <label for="load-admin-user">Admin User (optional override)</label>
+                <input id="load-admin-user" placeholder="admin" />
+              </div>
+              <div class="field">
+                <label for="load-admin-password">Admin Password (optional override)</label>
+                <input id="load-admin-password" type="password" placeholder="password" />
+              </div>
+            </div>
+
+            <div class="form-grid one advanced-content">
+              <div class="field">
+                <label for="load-admin-token">Admin Token (optional override)</label>
+                <input id="load-admin-token" type="password" placeholder="Bearer token" />
+              </div>
+            </div>
+
+            <div class="distribution-block">
+              <div class="distribution-head">
+                <h4>Role Distribution</h4>
+                <div class="distribution-actions">
+                  <span class="totals" id="role-total">0 / 0</span>
+                  <button type="button" class="btn-secondary btn-mini" id="btn-role-autofill">Auto-distribute</button>
+                </div>
+              </div>
+              <div class="form-grid three compact-inputs">
+                <div class="field">
+                  <label for="role-admin">Admin</label>
+                  <input id="role-admin" type="number" min="0" value="1" />
+                </div>
+                <div class="field">
+                  <label for="role-editor">Editor</label>
+                  <input id="role-editor" type="number" min="0" value="1" />
+                </div>
+                <div class="field">
+                  <label for="role-viewer">Viewer</label>
+                  <input id="role-viewer" type="number" min="0" value="1" />
+                </div>
+              </div>
+            </div>
+
+            <div class="distribution-block">
+              <div class="distribution-head">
+                <h4>Browser Distribution</h4>
+                <div class="distribution-actions">
+                  <span class="totals" id="browser-total">0 / 0</span>
+                  <button type="button" class="btn-secondary btn-mini" id="btn-browser-autofill">Auto-distribute</button>
+                </div>
+              </div>
+              <div class="form-grid three compact-inputs">
+                <div class="field">
+                  <label for="browser-chromium">Chromium</label>
+                  <input id="browser-chromium" type="number" min="0" value="1" />
+                </div>
+                <div class="field">
+                  <label for="browser-firefox">Firefox</label>
+                  <input id="browser-firefox" type="number" min="0" value="1" />
+                </div>
+                <div class="field">
+                  <label for="browser-webkit">WebKit</label>
+                  <input id="browser-webkit" type="number" min="0" value="1" />
+                </div>
+              </div>
+            </div>
+
+            <div class="form-grid one advanced-content">
+              <div class="field">
+                <label for="load-os">OS Emulation (comma separated)</label>
+                <input id="load-os" value="win-chrome,mac-firefox,mac-safari" />
+              </div>
+            </div>
+
+            <div class="form-grid one advanced-content">
+              <div class="field checkbox-field">
+                <label><input id="load-vision" type="checkbox" /> Vision Enabled</label>
+              </div>
+            </div>
+          </details>
+
+          <section class="selection-block">
+            <h4>Scenario Paths</h4>
+            <p class="sub">Pick reusable paths for common test intent.</p>
+            <div class="path-grid">
+              <label class="path-item">
+                <input id="path-model-deploy" type="checkbox" />
+                <span>
+                  <span class="path-title">Model Download / Deployment</span>
+                  <span class="path-desc">Runs model browsing + deploy flows.</span>
+                </span>
+              </label>
+              <label class="path-item">
+                <input id="path-app-tool-deploy" type="checkbox" />
+                <span>
+                  <span class="path-title">App &amp; Tool Deployment</span>
+                  <span class="path-desc">Runs app deploy + app garden + vector DB flows.</span>
+                </span>
+              </label>
+              <label class="path-item">
+                <input id="path-user-admin" type="checkbox" />
+                <span>
+                  <span class="path-title">Add / Remove Users (Admin Path)</span>
+                  <span class="path-desc">Runs cluster admin + RBAC boundary checks.</span>
+                </span>
+              </label>
+            </div>
+            <p class="preview" id="path-scenarios-preview">No path selected.</p>
+          </section>
+
+          <section class="selection-block">
+            <div class="section-inline-head">
+              <h4>Saved Custom Scenarios</h4>
+              <div class="actions compact">
+                <span class="pill" id="custom-scenarios-count">0 loaded</span>
+                <button type="button" class="btn-secondary btn-mini" id="custom-scenarios-refresh">Refresh</button>
+              </div>
+            </div>
+            <div id="custom-scenarios-picker" class="scenario-chip-grid">
+              <div class="scenario-empty">Loading saved scenarios...</div>
+            </div>
+            <p class="preview" id="custom-scenarios-preview">No custom scenarios selected.</p>
+          </section>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="manual-scenarios">Additional Scenarios (comma separated)</label>
+              <input id="manual-scenarios" value="login" />
+            </div>
+          </div>
+
+          <section class="selection-block">
+            <div class="section-inline-head">
+              <h4>Scenario Weights</h4>
+              <button type="button" class="btn-secondary btn-mini" id="add-weight-row">Add Row</button>
+            </div>
+            <div id="weight-rows" class="weight-rows"></div>
+          </section>
+
+          <div class="actions">
+            <button type="button" class="btn-primary" id="load-run-btn">Start Load Test</button>
+          </div>
+          <p class="inline-message" id="load-msg" aria-live="polite"></p>
+        </section>
+
+        <section class="subpanel" id="panel-custom" role="tabpanel" aria-labelledby="mode-custom">
+          <div class="subpanel-head">
+            <h3>Custom Scenario Run</h3>
+            <p class="sub">Use this when you want to run one saved scenario quickly with minimal setup.</p>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="custom-run-scenario-select">Saved Scenario (required)</label>
+              <select id="custom-run-scenario-select">
+                <option value="">Loading...</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="custom-run-url">Target App URL (required)</label>
+              <input id="custom-run-url" type="url" placeholder="https://test.kamiwaza.dev/runtime/apps/your-app/" />
+            </div>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="custom-run-username">Username</label>
+              <input id="custom-run-username" value="admin" />
+            </div>
+            <div class="field">
+              <label for="custom-run-password">Password</label>
+              <input id="custom-run-password" type="password" placeholder="password" />
+            </div>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="custom-run-duration">Duration (seconds)</label>
+              <input id="custom-run-duration" type="number" min="10" value="300" />
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="button" class="btn-primary" id="custom-run-btn">Start Custom Scenario Run</button>
+          </div>
+          <p class="inline-message" id="custom-run-msg" aria-live="polite"></p>
+        </section>
+      </section>
+
+      <section class="card page" id="page-monitor" role="tabpanel" aria-labelledby="tab-monitor" hidden>
+        <header class="page-head">
+          <div>
+            <h2>Monitor Runs</h2>
+            <p class="sub">Track active and historical runs, inspect details, and stream events in real time.</p>
+          </div>
+          <div class="actions compact">
+            <button type="button" class="btn-secondary" id="monitor-refresh-runs">Refresh</button>
+          </div>
+        </header>
+
+        <div class="toolbar">
+          <div class="field inline">
+            <label for="monitor-status-filter">Status</label>
+            <select id="monitor-status-filter">
+              <option value="">All</option>
+              <option value="PENDING">Pending</option>
+              <option value="RUNNING">Running</option>
+              <option value="COMPLETED">Completed</option>
+              <option value="FAILED">Failed</option>
+              <option value="CANCELLED">Cancelled</option>
+            </select>
+          </div>
+          <div class="field inline">
+            <label for="monitor-sort">Sort</label>
+            <select id="monitor-sort">
+              <option value="created_desc">Newest first</option>
+              <option value="created_asc">Oldest first</option>
+              <option value="status">Status</option>
+            </select>
+          </div>
+          <div class="field grow inline">
+            <label for="monitor-search">Search Run ID</label>
+            <input id="monitor-search" placeholder="Type run id..." />
+          </div>
         </div>
 
-        <div style="margin-top:18px;">
-          <h2 class="section-title">Saved Custom Scenarios</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Users</th>
+                <th>Workers</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="runs-table-body"></tbody>
+          </table>
+          <p id="runs-empty" class="sub table-empty">No runs yet.</p>
+        </div>
+
+        <div class="monitor-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <h3>Run Detail</h3>
+              <div class="actions compact">
+                <button type="button" class="btn-secondary btn-icon" id="copy-run-detail-btn" title="Copy run detail">Copy</button>
+                <button type="button" class="btn-secondary" id="open-report-btn">Open Report</button>
+                <button type="button" class="btn-danger" id="stop-run-btn">Stop Run</button>
+                <button type="button" class="btn-danger" id="purge-run-btn">Delete Run</button>
+              </div>
+            </div>
+            <pre id="run-detail-pre">Select a run to view details.</pre>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h3>Live Events</h3>
+              <div class="actions compact">
+                <button type="button" class="btn-secondary btn-icon" id="copy-events-btn" title="Copy events">Copy</button>
+                <span class="pill" id="ws-state">WS: idle</span>
+              </div>
+            </div>
+            <div class="events" id="events-list"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h3>Latest Screenshots</h3>
+            <span class="pill">Auto-updates while connected</span>
+          </div>
+          <div class="shots" id="shots-grid"></div>
+        </section>
+      </section>
+
+      <section class="card page" id="page-builder" role="tabpanel" aria-labelledby="tab-builder" hidden>
+        <header class="page-head">
+          <div>
+            <h2>Build Scenarios</h2>
+            <p class="sub">Generate and iterate scenario YAML using natural language prompts.</p>
+          </div>
+        </header>
+
+        <ol class="step-strip" aria-label="Builder flow">
+          <li class="active">1. Describe</li>
+          <li>2. Generate</li>
+          <li>3. Save or Run</li>
+        </ol>
+
+        <div class="builder-grid">
+          <section class="panel">
+            <div class="section-inline-head">
+              <h3>Scenario Builder</h3>
+              <span class="pill" id="builder-backend-badge">Detecting backend...</span>
+            </div>
+
+            <div class="form-grid two">
+              <div class="field">
+                <label for="builder-backend-select">LLM Backend</label>
+                <select id="builder-backend-select">
+                  <option value="">detecting...</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="builder-name">Scenario Name (optional)</label>
+                <input id="builder-name" placeholder="my_settings_test" />
+              </div>
+            </div>
+
+            <div class="form-grid one">
+              <div class="field">
+                <label for="builder-target-url">Target App URL</label>
+                <input id="builder-target-url" type="url" placeholder="https://test.kamiwaza.dev/runtime/apps/kaizen-xxx/" />
+              </div>
+            </div>
+
+            <div class="form-grid two">
+              <div class="field">
+                <label for="builder-username">Username</label>
+                <input id="builder-username" value="admin" />
+              </div>
+              <div class="field">
+                <label for="builder-password">Password</label>
+                <input id="builder-password" type="password" placeholder="password" />
+              </div>
+            </div>
+
+            <div class="form-grid one">
+              <div class="field">
+                <label for="builder-prompt">Describe what you want to test</label>
+                <textarea id="builder-prompt" rows="4" placeholder="e.g., Test that the settings page loads, all tabs are clickable, and no errors appear"></textarea>
+              </div>
+            </div>
+
+            <div class="form-grid one">
+              <div class="field">
+                <label for="builder-tags">Tags (comma separated, optional)</label>
+                <input id="builder-tags" placeholder="settings, smoke" />
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" class="btn-primary" id="builder-generate-btn">Generate with Browser Exploration</button>
+              <button type="button" class="btn-secondary" id="builder-generate-blind-btn">Generate from Prompt Only</button>
+            </div>
+            <p class="inline-message" id="builder-message" aria-live="polite"></p>
+
+            <div id="builder-progress" class="progress" hidden>
+              <p id="builder-progress-text">Exploring...</p>
+              <div id="builder-transcript" class="builder-transcript" aria-live="polite"></div>
+            </div>
+          </section>
+
+          <section class="panel" id="builder-editor-section" hidden>
+            <h3>Generated YAML</h3>
+            <div class="field">
+              <label for="builder-yaml">Edit if needed before saving</label>
+              <textarea id="builder-yaml" rows="18" class="mono"></textarea>
+            </div>
+
+            <div class="form-grid two">
+              <div class="field">
+                <label for="builder-save-name">Save As</label>
+                <input id="builder-save-name" placeholder="scenario_name" />
+              </div>
+              <div class="actions align-end">
+                <button type="button" class="btn-primary" id="builder-save-btn">Save Scenario</button>
+                <button type="button" class="btn-secondary" id="builder-save-run-btn">Save &amp; Run</button>
+              </div>
+            </div>
+            <p class="inline-message" id="builder-save-message" aria-live="polite"></p>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="section-inline-head">
+            <h3>Saved Custom Scenarios</h3>
+            <button type="button" class="btn-secondary btn-mini" id="builder-refresh-scenarios-btn">Refresh</button>
+          </div>
           <div id="builder-scenario-list" class="path-grid">
             <div class="sub">No custom scenarios yet.</div>
           </div>
-        </div>
-      </div><!-- end panel-builder -->
-    </section>
-
-    <div class="main-stack">
-      <section class="card">
-        <div class="panel-head">
-          <h2 class="section-title" style="margin:0;">Runs</h2>
-          <span class="pill">Click a run ID to inspect + stream</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Run</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Users</th>
-              <th>Workers</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="runs-table"></tbody>
-        </table>
+        </section>
       </section>
 
-      <section class="card layout-2">
-        <div>
-          <div class="panel-head">
-            <h2 class="section-title" style="margin:0;">Run Detail</h2>
-            <div class="actions" style="margin:0;">
-              <button class="btn-secondary btn-icon" id="copy-run-detail" title="Copy run detail" aria-label="Copy run detail">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H10V7h9v14z"/>
-                </svg>
-              </button>
-              <button class="btn-secondary" id="open-report">Open Report</button>
-              <button class="btn-danger" id="stop-run">Stop Run</button>
-            </div>
+      <section class="card page" id="page-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+        <header class="page-head">
+          <div>
+            <h2>Settings</h2>
+            <p class="sub">Set defaults and behavior preferences for all pages.</p>
           </div>
-          <pre id="run-detail">Select a run to view details.</pre>
-        </div>
-        <div>
-          <div class="panel-head">
-            <h2 class="section-title" style="margin:0;">Live Events</h2>
-            <div class="actions" style="margin:0;">
-              <button class="btn-secondary btn-icon" id="copy-live-events" title="Copy live events" aria-label="Copy live events">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H10V7h9v14z"/>
-                </svg>
-              </button>
-              <span class="pill" id="ws-state">WS: idle</span>
-            </div>
-          </div>
-          <div class="events" id="events"></div>
-        </div>
-      </section>
+        </header>
 
-      <section class="card">
-        <div class="panel-head">
-          <h2 class="section-title" style="margin:0;">Latest Screenshots</h2>
-          <span class="pill">Auto-updates from websocket</span>
+        <div class="form-grid one">
+          <div class="field">
+            <label for="setting-default-url">Default Kamiwaza URL</label>
+            <input id="setting-default-url" type="url" placeholder="https://test.kamiwaza.dev" />
+          </div>
         </div>
-        <div class="shots" id="shots"></div>
+
+        <div class="form-grid two">
+          <div class="field">
+            <label for="setting-default-user">Default Username</label>
+            <input id="setting-default-user" value="admin" />
+          </div>
+          <div class="field">
+            <label for="setting-default-password">Default Password</label>
+            <input id="setting-default-password" type="password" placeholder="password" />
+          </div>
+        </div>
+
+        <div class="form-grid two">
+          <div class="field checkbox-field">
+            <label><input id="setting-remember-secrets" type="checkbox" /> Remember passwords/tokens in local draft state</label>
+          </div>
+          <div class="field checkbox-field">
+            <label><input id="setting-auto-open-monitor" type="checkbox" checked /> Auto-open Monitor Runs when a test starts</label>
+          </div>
+        </div>
+
+        <div class="form-grid one">
+          <div class="field">
+            <label for="setting-runs-refresh-interval">Runs Auto-Refresh Interval (seconds)</label>
+            <input id="setting-runs-refresh-interval" type="number" min="2" max="60" value="5" />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn-primary" id="settings-save-btn">Save Settings</button>
+          <button type="button" class="btn-secondary" id="settings-reset-btn">Reset Defaults</button>
+        </div>
+        <p class="inline-message" id="settings-msg" aria-live="polite"></p>
       </section>
-    </div>
+    </main>
   </div>
 
-  <!-- Lightbox gallery overlay -->
-  <div class="lightbox" id="lightbox">
-    <button class="lb-close" id="lb-close" aria-label="Close">&times;</button>
-    <button class="lb-nav lb-prev" id="lb-prev" aria-label="Previous">&#8249;</button>
-    <button class="lb-nav lb-next" id="lb-next" aria-label="Next">&#8250;</button>
+  <div class="lightbox" id="lightbox" hidden>
+    <button type="button" class="lb-close" id="lb-close" aria-label="Close">&times;</button>
+    <button type="button" class="lb-nav lb-prev" id="lb-prev" aria-label="Previous">&#8249;</button>
+    <button type="button" class="lb-nav lb-next" id="lb-next" aria-label="Next">&#8250;</button>
     <img id="lb-img" src="" alt="Screenshot" />
     <div class="lb-caption" id="lb-caption"></div>
     <div class="lb-counter" id="lb-counter"></div>
   </div>
 
-  <script>
-    let currentMode = "kaizen"; // "kaizen" or "stress"
-
-    const profiles = {
-      kaizen: {
-        concurrent_users: 1,
-        role_distribution: { admin: 1 },
-        browser_distribution: { chromium: 1 },
-        os_emulation: ["win-chrome"],
-        scenarios: ["kaizen_chat"],
-        scenario_weights: { kaizen_chat: 1 },
-        duration_seconds: 300,
-        ramp_up_seconds: 0,
-        vision_enabled: false,
-        exploratory_pct: 0,
-        skip_user_provisioning: true,
-        single_iteration: true,
-      },
-      smoke: {
-        concurrent_users: 3,
-        role_distribution: { admin: 1, editor: 1, viewer: 1 },
-        browser_distribution: { chromium: 1, firefox: 1, webkit: 1 },
-        os_emulation: ["win-chrome", "mac-firefox", "mac-safari"],
-        scenarios: ["login"],
-        scenario_weights: { login: 1 },
-        duration_seconds: 120,
-        ramp_up_seconds: 10,
-        vision_enabled: false,
-        exploratory_pct: 0,
-      },
-      load: {
-        concurrent_users: 20,
-        role_distribution: { admin: 2, editor: 8, viewer: 10 },
-        browser_distribution: { chromium: 10, firefox: 6, webkit: 4 },
-        os_emulation: ["win-chrome", "mac-safari", "mac-firefox", "linux-chrome", "iphone-15", "pixel-7"],
-        scenarios: ["login"],
-        scenario_weights: { login: 1 },
-        duration_seconds: 600,
-        ramp_up_seconds: 60,
-        vision_enabled: true,
-        exploratory_pct: 0.1,
-      },
-      soak: {
-        concurrent_users: 5,
-        role_distribution: { admin: 1, editor: 2, viewer: 2 },
-        browser_distribution: { chromium: 3, firefox: 1, webkit: 1 },
-        os_emulation: ["win-chrome", "mac-firefox", "mac-safari"],
-        scenarios: ["login"],
-        scenario_weights: { login: 1 },
-        duration_seconds: 3600,
-        ramp_up_seconds: 30,
-        vision_enabled: false,
-        exploratory_pct: 0,
-      },
-    };
-
-    let activeRunId = null;
-    let ws = null;
-    let refreshTimer = null;
-    const shots = new Map();
-    const SCENARIO_PATHS = {
-      model_deploy: {
-        scenarios: ["model_browse", "model_deploy"],
-      },
-      app_tool_deploy: {
-        scenarios: ["app_deploy", "app_garden", "vectordb"],
-      },
-      user_admin: {
-        scenarios: ["cluster_admin", "rbac_boundary"],
-      },
-    };
-    const PATH_INPUTS = {
-      model_deploy: "path-model-deploy",
-      app_tool_deploy: "path-app-tool-deploy",
-      user_admin: "path-user-admin",
-    };
-
-    const el = (id) => document.getElementById(id);
-
-    function setMessage(text, cls = "") {
-      const node = el("start-message");
-      node.textContent = text;
-      node.className = `message ${cls}`.trim();
-    }
-
-    function escapeHtml(value) {
-      return String(value || "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-    }
-
-    function copyIconSvg() {
-      return `
-        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H10V7h9v14z"/>
-        </svg>
-      `;
-    }
-
-    async function copyToClipboard(text, successLabel = "Copied to clipboard.") {
-      if (!text) {
-        setMessage("Nothing to copy.", "warn");
-        return;
-      }
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(text);
-        } else {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed";
-          ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          ta.remove();
-        }
-        setMessage(successLabel, "ok");
-      } catch {
-        setMessage("Clipboard copy failed.", "err");
-      }
-    }
-
-    function listToCsv(arr) {
-      return (arr || []).join(",");
-    }
-
-    function uniqList(items) {
-      const out = [];
-      const seen = new Set();
-      (items || []).forEach((item) => {
-        if (!item || seen.has(item)) {
-          return;
-        }
-        seen.add(item);
-        out.push(item);
-      });
-      return out;
-    }
-
-    function csvToList(value) {
-      return String(value || "")
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean);
-    }
-
-    function selectedPathScenarios() {
-      const combined = [];
-      Object.entries(PATH_INPUTS).forEach(([pathKey, inputId]) => {
-        if (el(inputId).checked) {
-          combined.push(...(SCENARIO_PATHS[pathKey]?.scenarios || []));
-        }
-      });
-      return uniqList(combined);
-    }
-
-    function inferSelectedPathsFromScenarios(scenarios) {
-      const selected = [];
-      const scenarioSet = new Set(scenarios || []);
-      Object.entries(SCENARIO_PATHS).forEach(([pathKey, pathCfg]) => {
-        const hasAny = (pathCfg.scenarios || []).some((name) => scenarioSet.has(name));
-        if (hasAny) {
-          selected.push(pathKey);
-        }
-      });
-      return selected;
-    }
-
-    function setSelectedPaths(pathKeys) {
-      const selected = new Set(pathKeys || []);
-      Object.entries(PATH_INPUTS).forEach(([pathKey, inputId]) => {
-        el(inputId).checked = selected.has(pathKey);
-      });
-      updatePathPreview();
-    }
-
-    function updatePathPreview() {
-      const pathScenarios = selectedPathScenarios();
-      if (pathScenarios.length === 0) {
-        el("path-scenarios-preview").textContent = "No path selected. Use Additional Scenarios or choose at least one path.";
-        return;
-      }
-      el("path-scenarios-preview").textContent = `Selected path scenarios: ${pathScenarios.join(", ")}`;
-    }
-
-    function applyProfile(name) {
-      const p = profiles[name];
-      if (!p) { return; }
-      el("concurrent").value = p.concurrent_users;
-      el("duration").value = p.duration_seconds;
-      el("ramp").value = p.ramp_up_seconds;
-      el("exploratory").value = p.exploratory_pct;
-      el("role-admin").value = p.role_distribution.admin || 0;
-      el("role-editor").value = p.role_distribution.editor || 0;
-      el("role-viewer").value = p.role_distribution.viewer || 0;
-      el("browser-chromium").value = p.browser_distribution.chromium || 0;
-      el("browser-firefox").value = p.browser_distribution.firefox || 0;
-      el("browser-webkit").value = p.browser_distribution.webkit || 0;
-      el("os").value = listToCsv(p.os_emulation);
-      const selectedPaths = p.path_selections || inferSelectedPathsFromScenarios(p.scenarios || []);
-      setSelectedPaths(selectedPaths);
-      el("scenarios").value = listToCsv(p.scenarios);
-      el("weights").value = JSON.stringify(p.scenario_weights || {}, null, 2);
-      el("vision").checked = Boolean(p.vision_enabled);
-    }
-
-    function initProfiles() {
-      const select = el("profile");
-      Object.keys(profiles).forEach((k) => {
-        const opt = document.createElement("option");
-        opt.value = k;
-        opt.textContent = k;
-        select.appendChild(opt);
-      });
-      select.value = "smoke";
-      applyProfile("smoke");
-      select.addEventListener("change", () => applyProfile(select.value));
-    }
-
-    function initScenarioPaths() {
-      Object.values(PATH_INPUTS).forEach((inputId) => {
-        el(inputId).addEventListener("change", updatePathPreview);
-      });
-      updatePathPreview();
-    }
-
-    function safeJsonParse(text) {
-      if (!text || !text.trim()) { return {}; }
-      try { return JSON.parse(text); }
-      catch { throw new Error("Scenario Weights must be valid JSON."); }
-    }
-
-    function toInt(id) {
-      return parseInt(el(id).value || "0", 10);
-    }
-
-    function trimOrNull(id) {
-      const value = String(el(id).value || "").trim();
-      return value || null;
-    }
-
-    function buildPayload() {
-      const selectedPathScenarioNames = selectedPathScenarios();
-      const additionalScenarioNames = csvToList(el("scenarios").value);
-      const combinedScenarios = uniqList([
-        ...selectedPathScenarioNames,
-        ...additionalScenarioNames,
-      ]);
-      const payload = {
-        concurrent_users: toInt("concurrent"),
-        role_distribution: {
-          admin: toInt("role-admin"),
-          editor: toInt("role-editor"),
-          viewer: toInt("role-viewer"),
-        },
-        browser_distribution: {
-          chromium: toInt("browser-chromium"),
-          firefox: toInt("browser-firefox"),
-          webkit: toInt("browser-webkit"),
-        },
-        os_emulation: csvToList(el("os").value),
-        scenarios: combinedScenarios,
-        scenario_weights: safeJsonParse(el("weights").value),
-        component: (el("component").value || "").trim() || null,
-        kamiwaza_url: trimOrNull("kamiwaza-url"),
-        kamiwaza_admin_user: trimOrNull("kamiwaza-admin-user"),
-        kamiwaza_admin_password: trimOrNull("kamiwaza-admin-password"),
-        kamiwaza_admin_token: trimOrNull("kamiwaza-admin-token"),
-        duration_seconds: toInt("duration"),
-        ramp_up_seconds: toInt("ramp"),
-        vision_enabled: el("vision").checked,
-        exploratory_pct: parseFloat(el("exploratory").value || "0"),
-      };
-
-      // Pass through extension fields if profile has them
-      const currentProfile = profiles[el("profile").value];
-      if (currentProfile && currentProfile.skip_user_provisioning) {
-        payload.skip_user_provisioning = true;
-      }
-
-      const roleSum = Object.values(payload.role_distribution).reduce((a, b) => a + b, 0);
-      const browserSum = Object.values(payload.browser_distribution).reduce((a, b) => a + b, 0);
-      if (payload.concurrent_users < 1) {
-        throw new Error("Concurrent users must be at least 1.");
-      }
-      if (payload.scenarios.length < 1) {
-        throw new Error("Pick at least one scenario path or additional scenario.");
-      }
-      if (roleSum !== payload.concurrent_users) {
-        throw new Error(`Role distribution total (${roleSum}) must equal concurrent users (${payload.concurrent_users}).`);
-      }
-      if (browserSum !== payload.concurrent_users) {
-        throw new Error(`Browser distribution total (${browserSum}) must equal concurrent users (${payload.concurrent_users}).`);
-      }
-      if (!payload.kamiwaza_url) {
-        throw new Error("Kamiwaza URL is required. Fill in the URL field above.");
-      }
-      return payload;
-    }
-
-    async function startRun() {
-      try {
-        const payload = buildPayload();
-        setMessage("Starting run...", "warn");
-        const res = await fetch("/runs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setMessage(data.detail || "Failed to start run.", "err");
-          return;
-        }
-        setMessage(`Run ${data.run_id} started.`, "ok");
-        activeRunId = data.run_id;
-        await refreshRuns();
-        await loadRunDetail();
-        connectLive();
-      } catch (err) {
-        setMessage(err.message || String(err), "err");
-      }
-    }
-
-    function statusBadge(status) {
-      return `<span class="status ${status}">${status}</span>`;
-    }
-
-    async function refreshRuns() {
-      const tbody = el("runs-table");
-      const res = await fetch("/runs");
-      const runs = await res.json();
-      tbody.innerHTML = "";
-
-      if (!Array.isArray(runs) || runs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7">No runs yet.</td></tr>';
-        return;
-      }
-
-      runs.forEach((run) => {
-        const tr = document.createElement("tr");
-        tr.className = "run-row";
-        tr.setAttribute("data-run-select", run.run_id);
-        const testType = run.test_type || "kamiwaza";
-        tr.innerHTML = `
-          <td><a class="run-link" href="/runs/${run.run_id}/report" target="_blank" rel="noopener">${run.run_id.slice(0, 12)}</a></td>
-          <td><span class="type-badge ${testType}">${testType.charAt(0).toUpperCase() + testType.slice(1)}</span></td>
-          <td>${statusBadge(run.status)}</td>
-          <td>${run.concurrent_users}</td>
-          <td>${run.completed_workers}/${run.concurrent_users}</td>
-          <td>${new Date(run.created_at).toLocaleString()}</td>
-          <td>
-            <button class="btn-secondary" data-run-inspect="${run.run_id}" style="padding:4px 8px;">Inspect</button>
-            <button class="btn-danger btn-icon" data-run-delete="${run.run_id}" aria-label="Delete run ${run.run_id}" title="Delete run">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm4 2v8h2v-8h-2zm4 0v8h2v-8h-2z"/>
-              </svg>
-            </button>
-          </td>
-        `;
-        tbody.appendChild(tr);
-      });
-
-      tbody.querySelectorAll("tr[data-run-select]").forEach((row) => {
-        row.addEventListener("click", async (evt) => {
-          if (evt.target.closest("a,button")) {
-            return;
-          }
-          activeRunId = row.getAttribute("data-run-select");
-          await loadRunDetail();
-          connectLive();
-        });
-      });
-
-      tbody.querySelectorAll("button[data-run-inspect]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          activeRunId = btn.getAttribute("data-run-inspect");
-          await loadRunDetail();
-          connectLive();
-        });
-      });
-
-      tbody.querySelectorAll("button[data-run-delete]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const runId = btn.getAttribute("data-run-delete");
-          await purgeRun(runId);
-        });
-      });
-    }
-
-    async function loadRunDetail() {
-      const detail = el("run-detail");
-      if (!activeRunId) {
-        detail.textContent = "Select a run to view details.";
-        return;
-      }
-      const res = await fetch(`/runs/${activeRunId}`);
-      const data = await res.json();
-      if (!res.ok) {
-        detail.textContent = JSON.stringify(data, null, 2);
-        return;
-      }
-      detail.textContent = JSON.stringify(data, null, 2);
-    }
-
-    function eventRow(evt) {
-      const ts = evt.ts ? new Date(evt.ts).toLocaleTimeString() : new Date().toLocaleTimeString();
-      const eventType = evt.type || "event";
-      const payload = evt.payload ? JSON.stringify(evt.payload) : "{}";
-      const lineText = JSON.stringify(evt, null, 2);
-      const encodedLine = encodeURIComponent(lineText);
-      return `
-        <div class="event-row">
-          <div class="event-content">
-            <span class="event-ts">${escapeHtml(ts)}</span>
-            <span class="event-type">${escapeHtml(eventType)}</span>
-            ${escapeHtml(payload)}
-          </div>
-          <button class="btn-secondary btn-copy" data-copy="${encodedLine}" title="Copy event log line" aria-label="Copy event log line">
-            ${copyIconSvg()}
-          </button>
-        </div>
-      `;
-    }
-
-    function addEvent(evt) {
-      if (evt.type === "heartbeat") {
-        return;
-      }
-      const box = el("events");
-      box.insertAdjacentHTML("afterbegin", eventRow(evt));
-      while (box.children.length > 200) {
-        box.removeChild(box.lastChild);
-      }
-    }
-
-    function gatherEventLogText() {
-      const lines = [];
-      el("events").querySelectorAll("button[data-copy]").forEach((btn) => {
-        try {
-          lines.push(decodeURIComponent(btn.getAttribute("data-copy") || ""));
-        } catch {
-          // ignore malformed copy payload
-        }
-      });
-      return lines.join("\n\n");
-    }
-
-    let galleryItems = [];
-    let galleryIndex = 0;
-
-    function renderShots() {
-      const container = el("shots");
-      galleryItems = Array.from(shots.values()).reverse();
-      container.innerHTML = "";
-      if (galleryItems.length === 0) {
-        container.innerHTML = "<div class='sub'>Screenshots will appear here during a run.</div>";
-        return;
-      }
-      galleryItems.forEach((item, idx) => {
-        const div = document.createElement("div");
-        div.className = "shot";
-        div.setAttribute("data-gallery-idx", idx);
-        div.innerHTML = `<img src="${item.url}" alt="${item.path}" loading="lazy" /><div>${item.path}</div>`;
-        div.addEventListener("click", () => openGallery(idx));
-        container.appendChild(div);
-      });
-    }
-
-    function openGallery(idx) {
-      if (!galleryItems.length) return;
-      galleryIndex = idx;
-      updateGalleryView();
-      el("lightbox").classList.add("open");
-    }
-
-    function updateGalleryView() {
-      const item = galleryItems[galleryIndex];
-      if (!item) return;
-      el("lb-img").src = item.url;
-      el("lb-caption").textContent = item.path;
-      el("lb-counter").textContent = `${galleryIndex + 1} / ${galleryItems.length}`;
-      el("lb-prev").disabled = galleryIndex <= 0;
-      el("lb-next").disabled = galleryIndex >= galleryItems.length - 1;
-    }
-
-    function closeGallery() {
-      el("lightbox").classList.remove("open");
-    }
-
-    // Gallery navigation
-    el("lb-close").addEventListener("click", closeGallery);
-    el("lb-prev").addEventListener("click", () => {
-      if (galleryIndex > 0) { galleryIndex--; updateGalleryView(); }
-    });
-    el("lb-next").addEventListener("click", () => {
-      if (galleryIndex < galleryItems.length - 1) { galleryIndex++; updateGalleryView(); }
-    });
-    el("lightbox").addEventListener("click", (e) => {
-      if (e.target === el("lightbox")) closeGallery();
-    });
-    document.addEventListener("keydown", (e) => {
-      if (!el("lightbox").classList.contains("open")) return;
-      if (e.key === "Escape") closeGallery();
-      if (e.key === "ArrowLeft" && galleryIndex > 0) { galleryIndex--; updateGalleryView(); }
-      if (e.key === "ArrowRight" && galleryIndex < galleryItems.length - 1) { galleryIndex++; updateGalleryView(); }
-    });
-
-    function saveShot(path) {
-      if (!activeRunId || !path) {
-        return;
-      }
-      const url = `/runs/${activeRunId}/artifacts/${path}`;
-      shots.set(path, { path, url, ts: Date.now() });
-      renderShots();
-      // If gallery is open, update it to include new shot
-      if (el("lightbox").classList.contains("open")) {
-        updateGalleryView();
-      }
-    }
-
-    function connectLive() {
-      const badge = el("ws-state");
-      if (!activeRunId) {
-        badge.textContent = "WS: idle";
-        return;
-      }
-
-      if (ws) {
-        ws.close();
-        ws = null;
-      }
-
-      const protocol = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${protocol}://${location.host}/live/${activeRunId}`);
-
-      ws.onopen = () => {
-        badge.textContent = "WS: connected";
-      };
-      ws.onclose = () => {
-        badge.textContent = "WS: closed";
-      };
-      ws.onerror = () => {
-        badge.textContent = "WS: error";
-      };
-      ws.onmessage = (msg) => {
-        try {
-          const evt = JSON.parse(msg.data);
-          addEvent(evt);
-          if (evt.type === "worker.screenshot" && evt.payload && evt.payload.screenshot) {
-            saveShot(evt.payload.screenshot);
-          }
-          if (evt.type === "stream.complete") {
-            loadRunDetail();
-            refreshRuns();
-          }
-        } catch {
-          // ignore malformed messages
-        }
-      };
-    }
-
-    async function stopRun() {
-      if (!activeRunId) {
-        setMessage("Select a run first.", "warn");
-        return;
-      }
-      const res = await fetch(`/runs/${activeRunId}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) {
-        setMessage(data.detail || "Failed to stop run.", "err");
-        return;
-      }
-      setMessage(`Run ${activeRunId} stop requested.`, "warn");
-      await loadRunDetail();
-      await refreshRuns();
-    }
-
-    async function purgeRun(runId) {
-      if (!runId) {
-        return;
-      }
-      if (!window.confirm(`Delete run ${runId.slice(0, 12)} and all artifacts?`)) {
-        return;
-      }
-
-      const res = await fetch(`/runs/${runId}/purge`, { method: "DELETE" });
-      const body = await res.text();
-      let data = {};
-      if (body && body.trim()) {
-        try {
-          data = JSON.parse(body);
-        } catch {
-          data = {};
-        }
-      }
-      if (!res.ok) {
-        setMessage(data.detail || `Failed to delete run ${runId}.`, "err");
-        return;
-      }
-
-      if (activeRunId === runId) {
-        activeRunId = null;
-        shots.clear();
-        renderShots();
-        el("events").innerHTML = "";
-        if (ws) {
-          ws.close();
-          ws = null;
-        }
-        el("ws-state").textContent = "WS: idle";
-      }
-
-      setMessage(`Run ${runId} deleted.`, "ok");
-      await refreshRuns();
-      await loadRunDetail();
-    }
-
-    function openReport() {
-      if (!activeRunId) {
-        setMessage("Select a run first.", "warn");
-        return;
-      }
-      window.open(`/runs/${activeRunId}/report`, "_blank");
-    }
-
-    function switchMode(mode) {
-      currentMode = mode;
-      ["kaizen", "stress", "builder"].forEach((m) => {
-        el(`panel-${m}`).classList.toggle("active", mode === m);
-        el(`mode-${m}`).classList.toggle("active", mode === m);
-      });
-    }
-
-    function buildKaizenPayload() {
-      const extensionUrl = (el("kaizen-extension-url").value || "").trim();
-      if (!extensionUrl) {
-        throw new Error("Extension URL is required for Kaizen test.");
-      }
-      const username = (el("kaizen-username").value || "").trim() || "admin";
-      const password = (el("kaizen-password").value || "").trim() || "kamiwaza";
-      const testMessage = (el("kaizen-message").value || "").trim();
-      return {
-        concurrent_users: 1,
-        role_distribution: { admin: 1 },
-        browser_distribution: { chromium: 1 },
-        os_emulation: ["win-chrome"],
-        scenarios: ["kaizen_chat"],
-        scenario_weights: { kaizen_chat: 1 },
-        duration_seconds: parseInt(el("kaizen-duration").value || "300", 10),
-        ramp_up_seconds: 0,
-        vision_enabled: el("kaizen-vision").checked,
-        exploratory_pct: 0,
-        extension_url: extensionUrl,
-        skip_user_provisioning: true,
-        single_iteration: true,
-        kamiwaza_url: extensionUrl,
-        kamiwaza_admin_user: username,
-        kamiwaza_admin_password: password,
-        test_message: testMessage || null,
-      };
-    }
-
-    function setKaizenMessage(text, cls = "") {
-      const node = el("kaizen-message-status");
-      node.textContent = text;
-      node.className = `message ${cls}`.trim();
-    }
-
-    async function startKaizenRun() {
-      try {
-        const payload = buildKaizenPayload();
-        setKaizenMessage("Starting Kaizen test...", "warn");
-        const res = await fetch("/runs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setKaizenMessage(data.detail || "Failed to start run.", "err");
-          return;
-        }
-        setKaizenMessage(`Run ${data.run_id} started.`, "ok");
-        activeRunId = data.run_id;
-        await refreshRuns();
-        await loadRunDetail();
-        connectLive();
-      } catch (err) {
-        setKaizenMessage(err.message || String(err), "err");
-      }
-    }
-
-    // ---- Builder functions ----
-
-    function setBuilderMessage(text, cls = "") {
-      const node = el("builder-message");
-      node.textContent = text;
-      node.className = `message ${cls}`.trim();
-    }
-
-    function setBuilderSaveMessage(text, cls = "") {
-      const node = el("builder-save-message");
-      node.textContent = text;
-      node.className = `message ${cls}`.trim();
-    }
-
-    async function detectBuilderBackend() {
-      const select = el("builder-backend-select");
-      const badge = el("builder-backend-badge");
-      try {
-        const res = await fetch("/builder/backends");
-        const data = await res.json();
-        select.innerHTML = "";
-        if (data.backends && data.backends.length > 0) {
-          data.backends.forEach((b) => {
-            const opt = document.createElement("option");
-            opt.value = b;
-            opt.textContent = b;
-            if (b === data.active) opt.selected = true;
-            select.appendChild(opt);
-          });
-          badge.innerHTML = `<span class="dot"></span> ${data.backends.length} available`;
-        } else {
-          select.innerHTML = '<option value="">none available</option>';
-          badge.textContent = "No LLM backend available";
-          badge.style.color = "var(--err)";
-        }
-      } catch {
-        select.innerHTML = '<option value="">error</option>';
-        badge.textContent = "error detecting";
-      }
-    }
-
-    async function generateScenarioExplore() {
-      const targetUrl = (el("builder-target-url").value || "").trim();
-      const prompt = (el("builder-prompt").value || "").trim();
-      if (!targetUrl) {
-        setBuilderMessage("Target App URL is required for exploration.", "err");
-        return;
-      }
-      if (!prompt) {
-        setBuilderMessage("Please describe what you want to test.", "warn");
-        return;
-      }
-
-      const username = (el("builder-username").value || "admin").trim();
-      const password = (el("builder-password").value || "").trim();
-      const backend = el("builder-backend-select").value || null;
-
-      setBuilderMessage("Exploring app with LLM... (this may take 2-5 minutes)", "warn");
-      el("builder-generate").disabled = true;
-      el("builder-progress").style.display = "block";
-      el("builder-progress-text").textContent = "Starting exploration...";
-
-      try {
-        const res = await fetch("/builder/explore", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target_url: targetUrl, task: prompt, username, password, backend }),
-        });
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let finalData = null;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            try {
-              const evt = JSON.parse(line.slice(6));
-              if (evt.type === "step") {
-                el("builder-progress-text").textContent = `Step ${evt.step}: ${evt.message}`;
-              } else if (evt.type === "complete") {
-                finalData = evt;
-              } else if (evt.type === "error") {
-                setBuilderMessage(`Explorer error: ${evt.message}`, "err");
-              }
-            } catch {}
-          }
-        }
-
-        el("builder-progress").style.display = "none";
-
-        if (finalData) {
-          if (finalData.errors && finalData.errors.length > 0) {
-            setBuilderMessage(
-              `Explored ${finalData.steps_taken} steps. Warnings: ${finalData.errors.join("; ")}`,
-              finalData.yaml_content ? "warn" : "err"
-            );
-          } else {
-            setBuilderMessage(
-              `Explored ${finalData.steps_taken} steps. Scenario generated${finalData.success ? " (task completed)" : ""}.`,
-              "ok"
-            );
-          }
-          if (finalData.yaml_content) {
-            el("builder-yaml").value = finalData.yaml_content;
-            el("builder-save-name").value = finalData.name || (el("builder-name").value || "").trim() || "";
-            el("builder-editor-section").style.display = "block";
-          }
-        }
-      } catch (err) {
-        setBuilderMessage(`Error: ${err.message || String(err)}`, "err");
-        el("builder-progress").style.display = "none";
-      } finally {
-        el("builder-generate").disabled = false;
-      }
-    }
-
-    async function generateScenarioBlind() {
-      const prompt = (el("builder-prompt").value || "").trim();
-      if (!prompt) {
-        setBuilderMessage("Please describe what you want to test.", "warn");
-        return;
-      }
-
-      const name = (el("builder-name").value || "").trim() || null;
-      const tagsRaw = (el("builder-tags").value || "").trim();
-      const tags = tagsRaw ? csvToList(tagsRaw) : [];
-
-      setBuilderMessage("Generating scenario... (this may take 30-60s)", "warn");
-      el("builder-generate-blind").disabled = true;
-
-      try {
-        const res = await fetch("/builder/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, name, tags, backend: el("builder-backend-select").value || null }),
-        });
-        const data = await res.json();
-
-        if (data.errors && data.errors.length > 0) {
-          setBuilderMessage(`Warnings: ${data.errors.join("; ")}`, data.yaml_content ? "warn" : "err");
-        } else {
-          setBuilderMessage(`Scenario generated via ${data.backend_used}.`, "ok");
-        }
-
-        if (data.yaml_content) {
-          el("builder-yaml").value = data.yaml_content;
-          el("builder-save-name").value = data.name || name || "";
-          el("builder-editor-section").style.display = "block";
-        }
-      } catch (err) {
-        setBuilderMessage(`Error: ${err.message || String(err)}`, "err");
-      } finally {
-        el("builder-generate-blind").disabled = false;
-      }
-    }
-
-    async function saveScenario() {
-      const yamlContent = (el("builder-yaml").value || "").trim();
-      const name = (el("builder-save-name").value || "").trim();
-      if (!name) {
-        setBuilderSaveMessage("Name is required.", "warn");
-        return;
-      }
-      if (!yamlContent) {
-        setBuilderSaveMessage("YAML content is empty.", "warn");
-        return;
-      }
-
-      try {
-        const res = await fetch("/builder/save", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, yaml_content: yamlContent }),
-        });
-        const data = await res.json();
-
-        if (data.saved) {
-          setBuilderSaveMessage(`Saved to ${data.path}`, "ok");
-          await refreshBuilderScenarios();
-        } else {
-          setBuilderSaveMessage(`Save failed: ${(data.errors || []).join("; ")}`, "err");
-        }
-        return data.saved;
-      } catch (err) {
-        setBuilderSaveMessage(`Error: ${err.message || String(err)}`, "err");
-        return false;
-      }
-    }
-
-    async function saveAndRunScenario() {
-      const saved = await saveScenario();
-      if (!saved) return;
-
-      const name = (el("builder-save-name").value || "").trim();
-      // Pull target URL from builder panel, then fall back to stress/kaizen panels
-      const targetUrl = (el("builder-target-url").value || el("kamiwaza-url").value || el("kaizen-extension-url").value || "").trim();
-      if (!targetUrl) {
-        setBuilderSaveMessage("Set Target App URL in the builder panel first.", "err");
-        return;
-      }
-      const adminUser = (el("builder-username").value || el("kamiwaza-admin-user").value || el("kaizen-username").value || "admin").trim();
-      const adminPass = (el("builder-password").value || el("kamiwaza-admin-password").value || el("kaizen-password").value || "").trim();
-      try {
-        const payload = {
-          concurrent_users: 1,
-          role_distribution: { admin: 1 },
-          browser_distribution: { chromium: 1 },
-          os_emulation: ["win-chrome"],
-          scenarios: [name],
-          scenario_weights: {},
-          duration_seconds: 300,
-          ramp_up_seconds: 0,
-          vision_enabled: false,
-          exploratory_pct: 0,
-          single_iteration: true,
-          skip_user_provisioning: true,
-          kamiwaza_url: targetUrl,
-          kamiwaza_admin_user: adminUser,
-          kamiwaza_admin_password: adminPass,
-        };
-
-        setBuilderSaveMessage("Starting run...", "warn");
-        const res = await fetch("/runs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setBuilderSaveMessage(data.detail || "Failed to start run.", "err");
-          return;
-        }
-        setBuilderSaveMessage(`Run ${data.run_id} started.`, "ok");
-        activeRunId = data.run_id;
-        await refreshRuns();
-        await loadRunDetail();
-        connectLive();
-      } catch (err) {
-        setBuilderSaveMessage(`Error: ${err.message || String(err)}`, "err");
-      }
-    }
-
-    async function refreshBuilderScenarios() {
-      try {
-        const res = await fetch("/builder/scenarios");
-        const data = await res.json();
-        const container = el("builder-scenario-list");
-
-        if (!data.scenarios || data.scenarios.length === 0) {
-          container.innerHTML = '<div class="sub">No custom scenarios yet.</div>';
-          return;
-        }
-
-        container.innerHTML = "";
-        data.scenarios.forEach((s) => {
-          const div = document.createElement("div");
-          div.className = "path-item";
-          div.innerHTML = `
-            <span>
-              <div class="path-title">${escapeHtml(s.name)}</div>
-              <div class="path-desc">${escapeHtml(s.description)} (${s.step_count} steps)</div>
-              <div class="path-desc" style="font-size:11px;color:var(--muted);">${escapeHtml((s.tags || []).join(", "))}</div>
-            </span>
-          `;
-          container.appendChild(div);
-        });
-      } catch {
-        // Silently fail
-      }
-    }
-
-    async function bootstrap() {
-      // Mode toggle
-      el("mode-kaizen").addEventListener("click", () => switchMode("kaizen"));
-      el("mode-stress").addEventListener("click", () => switchMode("stress"));
-      el("mode-builder").addEventListener("click", () => switchMode("builder"));
-
-      // Builder mode
-      el("builder-generate").addEventListener("click", generateScenarioExplore);
-      el("builder-generate-blind").addEventListener("click", generateScenarioBlind);
-      el("builder-save").addEventListener("click", saveScenario);
-      el("builder-save-run").addEventListener("click", saveAndRunScenario);
-      detectBuilderBackend();
-      refreshBuilderScenarios();
-
-      // Kaizen mode
-      el("kaizen-run").addEventListener("click", startKaizenRun);
-      el("refresh-runs-kaizen").addEventListener("click", refreshRuns);
-
-      initProfiles();
-      initScenarioPaths();
-      el("start-run").addEventListener("click", startRun);
-      el("refresh-runs").addEventListener("click", refreshRuns);
-      el("stop-run").addEventListener("click", stopRun);
-      el("open-report").addEventListener("click", openReport);
-      el("copy-run-detail").addEventListener("click", () => {
-        copyToClipboard(el("run-detail").textContent || "", "Run detail copied.");
-      });
-      el("copy-live-events").addEventListener("click", () => {
-        copyToClipboard(gatherEventLogText(), "Live events copied.");
-      });
-      el("events").addEventListener("click", (evt) => {
-        const copyBtn = evt.target.closest("button[data-copy]");
-        if (!copyBtn) {
-          return;
-        }
-        const encoded = copyBtn.getAttribute("data-copy") || "";
-        let decoded = "";
-        try {
-          decoded = decodeURIComponent(encoded);
-        } catch {
-          decoded = encoded;
-        }
-        copyToClipboard(decoded, "Event log line copied.");
-      });
-
-      await refreshRuns();
-      await loadRunDetail();
-
-      if (refreshTimer) {
-        clearInterval(refreshTimer);
-      }
-      refreshTimer = setInterval(() => {
-        refreshRuns();
-        if (activeRunId) {
-          loadRunDetail();
-        }
-      }, 5000);
-    }
-
-    bootstrap().catch((err) => {
-      el("service-status").textContent = `UI error: ${err.message || String(err)}`;
-      el("service-status").className = "err";
-    });
-  </script>
+  <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <script src="/ui/assets/app.js" defer></script>
 </body>
 </html>

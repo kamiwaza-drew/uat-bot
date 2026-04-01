@@ -5,6 +5,8 @@ import string
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 import httpx
 
@@ -53,6 +55,33 @@ class KamiwazaUserManager:
         if isinstance(payload, dict):
             return payload
         return {}
+
+    @staticmethod
+    def _api_base_url_for_user_admin(base_url: str) -> str:
+        """Normalize app runtime URLs to the platform API base for auth/user endpoints.
+
+        Example:
+        https://host/runtime/apps/kaizen-abc -> https://host
+        https://host/prefix/runtime/apps/kaizen-abc -> https://host/prefix
+        """
+        raw = (base_url or "").strip().rstrip("/")
+        if not raw:
+            return raw
+
+        split = urlsplit(raw)
+        path = split.path.rstrip("/")
+        marker = "/runtime/apps"
+
+        if path == marker:
+            api_path = ""
+        elif path.startswith(f"{marker}/"):
+            api_path = ""
+        elif f"{marker}/" in path:
+            api_path = path.split(f"{marker}/", 1)[0].rstrip("/")
+        else:
+            api_path = path
+
+        return urlunsplit((split.scheme, split.netloc, api_path, "", "")).rstrip("/")
 
     def resolve_runtime_config(self, run_config: RunCreateRequest | None = None) -> RuntimeKamiwazaConfig:
         has_overrides = False
@@ -220,7 +249,8 @@ class KamiwazaUserManager:
             )
 
         created: list[TestUser] = []
-        async with httpx.AsyncClient(base_url=cfg.base_url, verify=False) as client:
+        api_base_url = self._api_base_url_for_user_admin(cfg.base_url)
+        async with httpx.AsyncClient(base_url=api_base_url, verify=False) as client:
             await self._try_admin_login(client, cfg)
             create_paths = ["/api/v1/users/local", "/api/auth/users/local", "/auth/users/local"]
             for idx, role in enumerate(roles, start=1):
@@ -286,7 +316,8 @@ class KamiwazaUserManager:
         if not users or not self.is_configured(cfg):
             return
 
-        async with httpx.AsyncClient(base_url=cfg.base_url, verify=False) as client:
+        api_base_url = self._api_base_url_for_user_admin(cfg.base_url)
+        async with httpx.AsyncClient(base_url=api_base_url, verify=False) as client:
             await self._try_admin_login(client, cfg)
             delete_paths = ["/api/v1/users/{user_id}", "/api/auth/users/{user_id}", "/auth/users/{user_id}"]
             for user in users:
@@ -311,7 +342,8 @@ class KamiwazaUserManager:
             return 0
 
         removed = 0
-        async with httpx.AsyncClient(base_url=cfg.base_url, verify=False) as client:
+        api_base_url = self._api_base_url_for_user_admin(cfg.base_url)
+        async with httpx.AsyncClient(base_url=api_base_url, verify=False) as client:
             await self._try_admin_login(client, cfg)
             list_paths = ["/api/v1/users", "/api/auth/users", "/auth/users"]
             response: httpx.Response | None = None

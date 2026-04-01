@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -145,10 +146,37 @@ async def explore(request: Request):
     result_holder: list = []
 
     async def on_step(step_num: int, description: str) -> None:
-        await queue.put(json.dumps({"type": "step", "step": step_num, "message": description}))
+        await queue.put(
+            json.dumps(
+                {
+                    "type": "step",
+                    "step": step_num,
+                    "message": description,
+                    "ts": datetime.now(UTC).isoformat(),
+                }
+            )
+        )
+
+    async def on_event(event: dict[str, object]) -> None:
+        await queue.put(json.dumps(event))
 
     async def run_exploration() -> None:
         try:
+            await queue.put(
+                json.dumps(
+                    {
+                        "type": "log",
+                        "event": "session.start",
+                        "message": "Starting interactive exploration session",
+                        "payload": {
+                            "target_url": target_url,
+                            "task": task,
+                            "backend": backend,
+                        },
+                        "ts": datetime.now(UTC).isoformat(),
+                    }
+                )
+            )
             result = await explore_and_build(
                 target_url=target_url,
                 task_description=task,
@@ -156,6 +184,7 @@ async def explore(request: Request):
                 password=password,
                 backend=backend,
                 on_step=on_step,
+                on_event=on_event,
             )
             result_holder.append(result)
             await queue.put(json.dumps({

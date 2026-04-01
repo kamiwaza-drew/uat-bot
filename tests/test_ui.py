@@ -23,3 +23,11 @@ def test_meta_contains_root_endpoint():
         assert response.status_code == 200
         payload = response.json()
         assert "/" in payload["endpoints"]
+
+
+def test_ui_assets_route_serves_javascript():
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/ui/assets/app.js")
+        assert response.status_code == 200
+        assert "switchPage" in response.text

@@ -57,3 +57,31 @@ def test_purge_missing_run_returns_404(tmp_path, monkeypatch):
             assert purge_resp.status_code == 404
     finally:
         config_module.get_settings.cache_clear()
+
+
+def test_snapshot_includes_metrics_events_and_screenshots(tmp_path, monkeypatch):
+    monkeypatch.setenv("UAT_DATA_DIR", str(tmp_path))
+    config_module.get_settings.cache_clear()
+    app = create_app()
+    try:
+        with TestClient(app) as client:
+            create_resp = client.post("/runs", json=_payload())
+            assert create_resp.status_code == 200
+            run_id = create_resp.json()["run_id"]
+
+            run_dir = tmp_path / "runs" / run_id
+            (run_dir / "metrics.jsonl").write_text('{"action":"login","status":"ok"}\n', encoding="utf-8")
+            (run_dir / "events.jsonl").write_text('{"type":"run.started","payload":{"x":1}}\n', encoding="utf-8")
+            shots_dir = run_dir / "screenshots"
+            shots_dir.mkdir(parents=True, exist_ok=True)
+            (shots_dir / "shot-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            snapshot_resp = client.get(f"/runs/{run_id}/snapshot")
+            assert snapshot_resp.status_code == 200
+            payload = snapshot_resp.json()
+            assert payload["run_id"] == run_id
+            assert payload["metrics"][0]["action"] == "login"
+            assert payload["events"][0]["type"] == "run.started"
+            assert "screenshots/shot-1.png" in payload["screenshots"]
+    finally:
+        config_module.get_settings.cache_clear()

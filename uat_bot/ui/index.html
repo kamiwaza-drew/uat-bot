@@ -43,6 +43,7 @@
         <div class="subtab-row" role="tablist" aria-label="Run type" id="run-mode-tabs">
           <button type="button" class="subtab active" id="mode-quick" role="tab" aria-selected="true" aria-controls="panel-quick" tabindex="0" data-mode="quick">Quick Chat Test</button>
           <button type="button" class="subtab" id="mode-load" role="tab" aria-selected="false" aria-controls="panel-load" tabindex="-1" data-mode="load">Load Test</button>
+          <button type="button" class="subtab" id="mode-review" role="tab" aria-selected="false" aria-controls="panel-review" tabindex="-1" data-mode="review">Review Run</button>
           <button type="button" class="subtab" id="mode-custom" role="tab" aria-selected="false" aria-controls="panel-custom" tabindex="-1" data-mode="custom">Custom Scenario Run</button>
         </div>
 
@@ -65,8 +66,8 @@
               <input id="quick-username" value="admin" />
             </div>
             <div class="field">
-              <label for="quick-password">Password</label>
-              <input id="quick-password" type="password" placeholder="password" />
+              <label for="quick-password">Password (optional)</label>
+              <input id="quick-password" type="password" placeholder="blank uses cluster secret" />
             </div>
           </div>
 
@@ -149,7 +150,7 @@
               </div>
               <div class="field">
                 <label for="load-admin-password">Admin Password (optional override)</label>
-                <input id="load-admin-password" type="password" placeholder="password" />
+                <input id="load-admin-password" type="password" placeholder="blank uses cluster secret" />
               </div>
             </div>
 
@@ -314,8 +315,8 @@
               <input id="custom-run-username" value="admin" />
             </div>
             <div class="field">
-              <label for="custom-run-password">Password</label>
-              <input id="custom-run-password" type="password" placeholder="password" />
+              <label for="custom-run-password">Password (optional)</label>
+              <input id="custom-run-password" type="password" placeholder="blank uses cluster secret" />
             </div>
           </div>
 
@@ -330,6 +331,88 @@
             <button type="button" class="btn-primary" id="custom-run-btn">Start Custom Scenario Run</button>
           </div>
           <p class="inline-message" id="custom-run-msg" aria-live="polite"></p>
+        </section>
+
+        <section class="subpanel" id="panel-review" role="tabpanel" aria-labelledby="mode-review">
+          <div class="subpanel-head">
+            <h3>Review Run</h3>
+            <p class="sub">Run the CI-style review flow locally using PR-like metadata, changed files, and a preview URL.</p>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="review-target-url">Preview / Target URL (required)</label>
+              <input id="review-target-url" type="url" placeholder="https://preview.kamiwaza.dev/runtime/apps/your-app/" />
+            </div>
+            <div class="field">
+              <label for="review-repo">Repository (optional)</label>
+              <input id="review-repo" placeholder="kamiwaza/uat-bot" />
+            </div>
+          </div>
+
+          <div class="form-grid three">
+            <div class="field">
+              <label for="review-branch">Branch (optional)</label>
+              <input id="review-branch" placeholder="feature/review-runner" />
+            </div>
+            <div class="field">
+              <label for="review-commit">Commit SHA (optional)</label>
+              <input id="review-commit" placeholder="abc1234" />
+            </div>
+            <div class="field">
+              <label for="review-component">Component Override (optional)</label>
+              <input id="review-component" placeholder="kaizen" />
+            </div>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="review-username">Username</label>
+              <input id="review-username" value="admin" />
+            </div>
+            <div class="field">
+              <label for="review-password">Password (optional)</label>
+              <input id="review-password" type="password" placeholder="blank uses cluster secret" />
+            </div>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="review-title">Change Title</label>
+              <input id="review-title" placeholder="Improve settings save flow" />
+            </div>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="review-body">Change Summary / Description</label>
+              <textarea id="review-body" rows="4" placeholder="Describe the intended change so the review planner can infer the right scenarios."></textarea>
+            </div>
+          </div>
+
+          <div class="form-grid one">
+            <div class="field">
+              <label for="review-files">Changed Files (one per line or comma separated)</label>
+              <textarea id="review-files" rows="6" class="mono" placeholder="src/settings/page.tsx&#10;src/components/ProfileForm.tsx"></textarea>
+            </div>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="review-scenarios">Preferred Scenarios (optional, comma separated)</label>
+              <input id="review-scenarios" placeholder="settings,login" />
+            </div>
+            <div class="field checkbox-field">
+              <label><input id="review-vision" type="checkbox" checked /> Vision Enabled</label>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="button" class="btn-secondary" id="review-plan-btn">Preview Review Plan</button>
+            <button type="button" class="btn-primary" id="review-run-btn">Start Review Run</button>
+          </div>
+          <p class="inline-message" id="review-msg" aria-live="polite"></p>
+          <pre id="review-plan-output" class="plan-output">Review planning output will appear here.</pre>
         </section>
       </section>
 
@@ -470,8 +553,8 @@
                 <input id="builder-username" value="admin" />
               </div>
               <div class="field">
-                <label for="builder-password">Password</label>
-                <input id="builder-password" type="password" placeholder="password" />
+                <label for="builder-password">Password (optional)</label>
+                <input id="builder-password" type="password" placeholder="blank uses cluster secret" />
               </div>
             </div>
 
@@ -554,8 +637,8 @@
             <input id="setting-default-user" value="admin" />
           </div>
           <div class="field">
-            <label for="setting-default-password">Default Password</label>
-            <input id="setting-default-password" type="password" placeholder="password" />
+            <label for="setting-default-password">Default Password (optional)</label>
+            <input id="setting-default-password" type="password" placeholder="blank uses cluster secret" />
           </div>
         </div>
 

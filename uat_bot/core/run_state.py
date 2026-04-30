@@ -7,8 +7,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from uat_bot.models import RunCreateRequest, RunEvent, RunStatus, TestUser
-from uat_bot.models import UATGuidanceBundle
+from uat_bot.models import (
+    ReviewPlan,
+    ReviewRunRequest,
+    ReviewSummary,
+    RunCreateRequest,
+    RunEvent,
+    RunStatus,
+    TestUser,
+    UATGuidanceBundle,
+)
 
 
 @dataclass(slots=True)
@@ -31,6 +39,9 @@ class RunState:
     uat_guidance: UATGuidanceBundle | None = None
     effective_kamiwaza_url: str | None = None
     auth_source: str | None = None
+    review_request: ReviewRunRequest | None = None
+    review_plan: ReviewPlan | None = None
+    review_summary: ReviewSummary | None = None
     _task: asyncio.Task[Any] | None = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     _events: asyncio.Queue[RunEvent] = field(default_factory=asyncio.Queue)

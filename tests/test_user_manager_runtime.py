@@ -78,7 +78,7 @@ def test_response_json_handles_non_json_response():
     assert manager._response_json(FakeResponse()) == {}
 
 
-def test_runtime_config_defaults_admin_credentials_when_missing():
+def test_runtime_config_uses_kubectl_secret_when_password_is_missing(monkeypatch):
     settings = SimpleNamespace(
         kamiwaza_url="https://env.example",
         kamiwaza_admin_user=None,
@@ -86,6 +86,25 @@ def test_runtime_config_defaults_admin_credentials_when_missing():
         kamiwaza_admin_token=None,
     )
     manager = KamiwazaUserManager(settings)
+    monkeypatch.setattr(manager, "_kubectl_admin_password", lambda: "secret-pass")
+
+    cfg = manager.resolve_runtime_config(_run_config())
+
+    assert cfg.base_url == "https://env.example"
+    assert cfg.admin_user == "admin"
+    assert cfg.admin_password == "secret-pass"
+    assert cfg.source == "kubectl-secret"
+
+
+def test_runtime_config_defaults_admin_credentials_when_secret_is_unavailable(monkeypatch):
+    settings = SimpleNamespace(
+        kamiwaza_url="https://env.example",
+        kamiwaza_admin_user=None,
+        kamiwaza_admin_password=None,
+        kamiwaza_admin_token=None,
+    )
+    manager = KamiwazaUserManager(settings)
+    monkeypatch.setattr(manager, "_kubectl_admin_password", lambda: None)
 
     cfg = manager.resolve_runtime_config(_run_config())
 

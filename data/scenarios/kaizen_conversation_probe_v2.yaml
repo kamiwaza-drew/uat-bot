@@ -1,0 +1,32 @@
+name: kaizen_conversation_probe_v2
+description: Probe an existing Kaizen conversation URL after login and send one message
+  using built-in send selectors.
+timeout: 240
+required_role: admin
+tags:
+- kaizen
+- conversation
+- probe
+steps:
+- action: screenshot
+  screenshot_name: conversation_entry
+- action: wait_for
+  target: kaizen_chat_input
+  timeout: 45
+- action: fill
+  target: kaizen_chat_input
+  value: '{{test_message}}'
+- action: screenshot
+  screenshot_name: conversation_message_typed
+- action: wait_for
+  target: kaizen_send_button
+  timeout: 20
+- action: click
+  target: kaizen_send_button
+  timeout: 10
+- action: sleep
+  timeout: 25
+- action: screenshot
+  screenshot_name: conversation_agent_response
+  validate:
+  - no_errors: true

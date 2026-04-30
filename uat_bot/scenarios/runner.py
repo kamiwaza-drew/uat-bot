@@ -70,6 +70,13 @@ class ScenarioRunner:
     def step_counter(self) -> int:
         return self._step_counter
 
+    @property
+    def metric_context(self) -> dict[str, str]:
+        context = dict(self.user_context)
+        if context.get("password"):
+            context["password"] = "***redacted***"
+        return context
+
     async def run(self, cancel_event: asyncio.Event | None = None) -> list[StepResult]:
         """Execute all steps in the scenario. Returns list of step results."""
         await self.event_sink(
@@ -91,7 +98,7 @@ class ScenarioRunner:
             # Emit metric
             await self.metric_sink(
                 {
-                    **self.user_context,
+                    **self.metric_context,
                     "run_id": self.run_id,
                     "worker_id": self.worker_id,
                     "scenario": self.scenario.name,

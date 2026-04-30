@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import secrets
 import string
+import subprocess
+from base64 import b64decode
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
@@ -83,10 +85,45 @@ class KamiwazaUserManager:
 
         return urlunsplit((split.scheme, split.netloc, api_path, "", "")).rstrip("/")
 
+    @staticmethod
+    def _kubectl_admin_password() -> str | None:
+        """Read the default admin password from the local Kamiwaza cluster.
+
+        This is the preferred fallback for local/operator runs. Explicit run
+        credentials, env credentials, and admin tokens still take precedence.
+        """
+        try:
+            encoded = subprocess.run(
+                [
+                    "kubectl",
+                    "get",
+                    "secret",
+                    "kamiwaza-user-admin",
+                    "-n",
+                    "kamiwaza",
+                    "-o",
+                    "jsonpath={.data.password}",
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return None
+        if not encoded:
+            return None
+        try:
+            decoded = b64decode(encoded).decode("utf-8").strip()
+        except Exception:
+            return None
+        return decoded or None
+
     def resolve_runtime_config(self, run_config: RunCreateRequest | None = None) -> RuntimeKamiwazaConfig:
         has_overrides = False
         used_env_fallback = False
         used_default_fallback = False
+        used_kubectl_fallback = False
 
         def pick(field: str, env_value: str | None) -> str | None:
             nonlocal has_overrides, used_env_fallback
@@ -107,16 +144,25 @@ class KamiwazaUserManager:
         admin_password = pick("kamiwaza_admin_password", self.settings.kamiwaza_admin_password)
         admin_token = pick("kamiwaza_admin_token", self.settings.kamiwaza_admin_token)
 
-        # Friendly local default when no credentials are provided in request or env.
+        if not admin_token and not admin_password:
+            admin_password = self._kubectl_admin_password()
+            if admin_password:
+                used_kubectl_fallback = True
+                if not admin_user:
+                    admin_user = "admin"
+
+        # Final friendly local default when no cluster secret is available.
         if not admin_token and not admin_user and not admin_password:
             admin_user = "admin"
             admin_password = "kamiwaza"
             used_default_fallback = True
 
-        if has_overrides and (used_env_fallback or used_default_fallback):
+        if has_overrides and (used_env_fallback or used_default_fallback or used_kubectl_fallback):
             source = "mixed"
         elif has_overrides:
             source = "override"
+        elif used_kubectl_fallback:
+            source = "kubectl-secret"
         elif used_default_fallback:
             source = "default"
         else:

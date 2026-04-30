@@ -189,6 +189,8 @@ async def test_login_clicks_expired_overlay_and_then_fills_form():
     assert ("input[name='username']", "admin") in page.fills
     assert ("input[name='password']", "kamiwaza") in page.fills
     assert any(row["action"] == "login" and row["status"] == "ok" for row in metrics)
+    assert any(row.get("password") == "***redacted***" for row in metrics)
+    assert not any(row.get("password") == "kamiwaza" for row in metrics)
     assert any(name == "worker.started" for name, _ in events)
 
 

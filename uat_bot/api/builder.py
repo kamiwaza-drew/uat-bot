@@ -15,6 +15,7 @@ from uat_bot.models import (
     ScenarioSaveRequest,
     ScenarioSaveResponse,
 )
+from uat_bot.core.user_manager import KamiwazaUserManager
 from uat_bot.scenarios.builder import detect_backend, detect_backends, generate_scenario, _validate_parsed
 from uat_bot.scenarios.explorer import explore_and_build
 
@@ -130,9 +131,16 @@ async def explore(request: Request):
     body = await request.json()
     target_url = body.get("target_url", "").strip()
     task = body.get("task", "").strip()
-    username = body.get("username", "admin").strip()
-    password = body.get("password", "kamiwaza").strip()
+    username = (body.get("username") or "").strip()
+    password = (body.get("password") or "").strip()
     backend = body.get("backend") or detect_backend() or "claude"
+
+    if not password:
+        runtime_config = KamiwazaUserManager(request.app.state.settings).resolve_runtime_config()
+        username = username or runtime_config.admin_user or "admin"
+        password = runtime_config.admin_password or "kamiwaza"
+    else:
+        username = username or "admin"
 
     if not target_url:
         raise HTTPException(status_code=400, detail="target_url is required")

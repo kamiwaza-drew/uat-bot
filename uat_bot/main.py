@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from uat_bot.api.builder import router as builder_router
 from uat_bot.api.live import router as live_router
+from uat_bot.api.reviews import router as reviews_router
 from uat_bot.api.runs import router as runs_router
 from uat_bot.api.uat import router as uat_router
 from uat_bot.api.ui import router as ui_router
@@ -51,7 +52,7 @@ def create_app() -> FastAPI:
         return {
             "service": "uat-bot",
             "status": "ok",
-            "endpoints": ["/", "/healthz", "/runs", "/uat/contexts", "/docs", "/meta"],
+            "endpoints": ["/", "/healthz", "/runs", "/reviews", "/uat/contexts", "/docs", "/meta"],
         }
 
     @app.get("/healthz")
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     app.include_router(runs_router)
+    app.include_router(reviews_router)
     app.include_router(live_router)
     app.include_router(uat_router)
     app.include_router(builder_router)

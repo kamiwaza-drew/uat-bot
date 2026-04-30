@@ -63,3 +63,51 @@ def test_report_auto_refresh_hint_and_script(tmp_path):
     assert "const AUTO_REFRESH_SECONDS = 5;" in html
     assert 'const SNAPSHOT_URL = "/runs/" + RUN_ID + "/snapshot";' in html
     assert "pollSnapshot();" in html
+
+
+def test_report_includes_review_section_when_artifacts_exist(tmp_path):
+    run_id = "review-report"
+    run_dir = tmp_path / run_id
+    analysis_dir = run_dir / "analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    (analysis_dir / "review_request.json").write_text(
+        json.dumps(
+            {
+                "target_url": "https://preview.example.test",
+                "repository": "kamiwaza/uat-bot",
+                "branch": "feature/review-runs",
+                "commit_sha": "abc1234",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (analysis_dir / "review_plan.json").write_text(
+        json.dumps(
+            {
+                "review_focus": "settings and preferences flows",
+                "scenarios": ["settings", "login"],
+                "rationale": ["Matched review rule 'settings' from changed files."],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (analysis_dir / "review_summary.json").write_text(
+        json.dumps(
+            {
+                "verdict": "warn",
+                "summary": "Review run found a suspicious settings regression.",
+                "review_focus": "settings and preferences flows",
+                "findings": [{"severity": "warn", "summary": "Save button looked disabled."}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report_path = asyncio.run(ReportGenerator().generate(run_id, run_dir))
+    html = report_path.read_text(encoding="utf-8")
+
+    assert "Review Run" in html
+    assert "kamiwaza/uat-bot" in html
+    assert "settings and preferences flows" in html
+    assert "Save button looked disabled." in html

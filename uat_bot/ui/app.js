@@ -103,6 +103,13 @@
       .filter(Boolean);
   }
 
+  function multilineOrCsvToList(value) {
+    return String(value || "")
+      .split(/\n|,/g)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
   function uniqList(items) {
     const out = [];
     const seen = new Set();
@@ -975,7 +982,7 @@
       throw new Error("Extension URL is required.");
     }
     const username = String(el("quick-username").value || "").trim() || "admin";
-    const password = String(el("quick-password").value || "").trim() || "kamiwaza";
+    const password = String(el("quick-password").value || "").trim();
     const message = String(el("quick-message").value || "").trim();
 
     return {
@@ -994,7 +1001,7 @@
       single_iteration: true,
       kamiwaza_url: extensionUrl,
       kamiwaza_admin_user: username,
-      kamiwaza_admin_password: password,
+      kamiwaza_admin_password: password || null,
       test_message: message || null,
     };
   }
@@ -1064,7 +1071,7 @@
       throw new Error("Target App URL is required.");
     }
     const username = String(el("custom-run-username").value || "").trim() || "admin";
-    const password = String(el("custom-run-password").value || "").trim() || "kamiwaza";
+    const password = String(el("custom-run-password").value || "").trim();
 
     return {
       concurrent_users: 1,
@@ -1081,7 +1088,29 @@
       skip_user_provisioning: true,
       kamiwaza_url: targetUrl,
       kamiwaza_admin_user: username,
-      kamiwaza_admin_password: password,
+      kamiwaza_admin_password: password || null,
+    };
+  }
+
+  function buildReviewPayload() {
+    const targetUrl = String(el("review-target-url").value || "").trim();
+    if (!targetUrl) {
+      throw new Error("Preview / Target URL is required.");
+    }
+
+    return {
+      target_url: targetUrl,
+      repository: trimOrNull("review-repo"),
+      branch: trimOrNull("review-branch"),
+      commit_sha: trimOrNull("review-commit"),
+      component_override: trimOrNull("review-component"),
+      pr_title: trimOrNull("review-title"),
+      pr_body: trimOrNull("review-body"),
+      changed_files: multilineOrCsvToList(el("review-files").value),
+      preferred_scenarios: csvToList(el("review-scenarios").value),
+      username: String(el("review-username").value || "").trim() || "admin",
+      password: String(el("review-password").value || "").trim() || null,
+      vision_enabled: Boolean(el("review-vision").checked),
     };
   }
 
@@ -1150,6 +1179,53 @@
       } catch (err) {
         setInlineMessage("custom-run-msg", err.message || String(err), "err");
         toast(err.message || "Failed to start custom run.", "err");
+      }
+    });
+  }
+
+  async function previewReviewPlan() {
+    const button = el("review-plan-btn");
+    await withButtonLock(button, "Planning...", async () => {
+      try {
+        const payload = buildReviewPayload();
+        setInlineMessage("review-msg", "Planning review run...", "warn");
+        const data = await apiJson("/reviews/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        el("review-plan-output").textContent = JSON.stringify(data, null, 2);
+        setInlineMessage("review-msg", "Review plan generated.", "ok");
+      } catch (err) {
+        setInlineMessage("review-msg", err.message || String(err), "err");
+        toast(err.message || "Failed to preview review plan.", "err");
+      }
+    });
+  }
+
+  async function startReviewRun() {
+    const button = el("review-run-btn");
+    await withButtonLock(button, "Starting...", async () => {
+      try {
+        const payload = buildReviewPayload();
+        setInlineMessage("review-msg", "Starting review run...", "warn");
+        const data = await apiJson("/reviews", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        el("review-plan-output").textContent = JSON.stringify(
+          {
+            review_plan: data.review_plan,
+            review_request: data.review_request,
+          },
+          null,
+          2
+        );
+        await afterRunStarted(data.run_id, "review-msg");
+      } catch (err) {
+        setInlineMessage("review-msg", err.message || String(err), "err");
+        toast(err.message || "Failed to start review run.", "err");
       }
     });
   }
@@ -1261,7 +1337,7 @@
             target_url: targetUrl,
             task: prompt,
             username: String(el("builder-username").value || "admin").trim(),
-            password: String(el("builder-password").value || "").trim(),
+            password: String(el("builder-password").value || "").trim() || null,
             backend: el("builder-backend-select").value || null,
           }),
         });
@@ -1482,7 +1558,7 @@
           String(el("builder-password").value || "").trim() ||
           String(el("load-admin-password").value || "").trim() ||
           String(el("quick-password").value || "").trim() ||
-          "",
+          null,
       };
 
       try {
@@ -1833,6 +1909,8 @@
     el("quick-run-btn").addEventListener("click", startQuickRun);
     el("load-run-btn").addEventListener("click", startLoadRun);
     el("custom-run-btn").addEventListener("click", startCustomRun);
+    el("review-plan-btn").addEventListener("click", previewReviewPlan);
+    el("review-run-btn").addEventListener("click", startReviewRun);
 
     el("monitor-refresh-runs").addEventListener("click", refreshRuns);
     el("monitor-status-filter").addEventListener("change", () => {

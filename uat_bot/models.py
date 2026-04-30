@@ -15,6 +15,12 @@ class RunStatus(str, Enum):
     cancelled = "CANCELLED"
 
 
+class ReviewTriggerType(str, Enum):
+    local = "LOCAL"
+    github = "GITHUB"
+    manual = "MANUAL"
+
+
 class RunCreateRequest(BaseModel):
     concurrent_users: int = Field(ge=1, le=200)
     role_distribution: dict[str, int]
@@ -55,12 +61,16 @@ class RunSummary(BaseModel):
     run_id: str
     status: RunStatus
     test_type: str = "kamiwaza"
+    trigger_type: str = "manual"
     created_at: datetime
     started_at: datetime | None = None
     ended_at: datetime | None = None
     concurrent_users: int
     completed_workers: int = 0
     failed_workers: int = 0
+    review_focus: str | None = None
+    review_verdict: str | None = None
+    changed_files_count: int = 0
 
 
 class RunDetail(RunSummary):
@@ -74,6 +84,70 @@ class RunDetail(RunSummary):
     uat_guidance_files: list[str] = Field(default_factory=list)
     effective_kamiwaza_url: str | None = None
     auth_source: str | None = None
+    review_request: dict[str, Any] | None = None
+    review_plan: dict[str, Any] | None = None
+    review_summary: dict[str, Any] | None = None
+
+
+class ReviewRunRequest(BaseModel):
+    trigger_type: ReviewTriggerType = ReviewTriggerType.local
+    target_url: str
+    changed_files: list[str] = Field(default_factory=list)
+    pr_title: str | None = None
+    pr_body: str | None = None
+    repository: str | None = None
+    branch: str | None = None
+    commit_sha: str | None = None
+    actor: str | None = None
+    username: str = "admin"
+    password: str | None = None
+    component_override: str | None = None
+    preferred_scenarios: list[str] = Field(default_factory=list)
+    vision_enabled: bool = True
+    max_scenarios: int = Field(default=3, ge=1, le=6)
+    test_message: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_inputs(self) -> "ReviewRunRequest":
+        self.changed_files = list(dict.fromkeys(x.strip() for x in self.changed_files if x and x.strip()))
+        self.preferred_scenarios = list(
+            dict.fromkeys(x.strip() for x in self.preferred_scenarios if x and x.strip())
+        )
+        self.username = self.username.strip() or "admin"
+        self.password = self.password.strip() if self.password else None
+        return self
+
+
+class ReviewPlan(BaseModel):
+    component: str | None = None
+    review_focus: str
+    scenarios: list[str] = Field(default_factory=list)
+    scenario_weights: dict[str, int] = Field(default_factory=dict)
+    rationale: list[str] = Field(default_factory=list)
+    matched_rules: list[str] = Field(default_factory=list)
+    required_role: str = "viewer"
+    changed_files_count: int = 0
+
+
+class ReviewFinding(BaseModel):
+    severity: str
+    summary: str
+    details: list[str] = Field(default_factory=list)
+    screenshot: str | None = None
+
+
+class ReviewSummary(BaseModel):
+    trigger_type: ReviewTriggerType = ReviewTriggerType.local
+    verdict: str
+    summary: str
+    findings: list[ReviewFinding] = Field(default_factory=list)
+    review_focus: str | None = None
+    component: str | None = None
+    scenario_names: list[str] = Field(default_factory=list)
+    changed_files_count: int = 0
+    artifact_paths: dict[str, str] = Field(default_factory=dict)
+    comment_markdown: str = ""
+    generated_at: datetime | None = None
 
 
 class UATGuidanceDoc(BaseModel):

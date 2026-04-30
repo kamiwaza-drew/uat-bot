@@ -47,12 +47,19 @@ class ReportGenerator:
             for path in sorted(shots_dir.rglob("*.png")) + sorted(shots_dir.rglob("*.jpg")):
                 screenshot_rel_paths.append(path.relative_to(run_dir).as_posix())
 
+        review_request = self._load_json_file(run_dir / "analysis" / "review_request.json")
+        review_plan = self._load_json_file(run_dir / "analysis" / "review_plan.json")
+        review_summary = self._load_json_file(run_dir / "analysis" / "review_summary.json")
+
         report_html = self._render(
             run_id=run_id,
             rows=rows,
             screenshot_paths=screenshot_rel_paths,
             events=events,
             ai_analysis=ai_analysis,
+            review_request=review_request,
+            review_plan=review_plan,
+            review_summary=review_summary,
             auto_refresh_seconds=max(0, int(auto_refresh_seconds or 0)),
         )
         report_path = run_dir / "report.html"
@@ -89,6 +96,16 @@ class ReportGenerator:
     @staticmethod
     def _esc(value: object) -> str:
         return html_mod.escape(str(value or ""))
+
+    @staticmethod
+    def _load_json_file(path: Path) -> dict | None:
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def _render_ai_analysis(self, ai_analysis: AnalysisReport | None, run_id: str) -> str:
         if not ai_analysis:
@@ -209,6 +226,62 @@ class ReportGenerator:
   </script>
 """
 
+    def _render_review_section(
+        self,
+        review_request: dict | None,
+        review_plan: dict | None,
+        review_summary: dict | None,
+    ) -> str:
+        if not any((review_request, review_plan, review_summary)):
+            return ""
+
+        focus = self._esc((review_summary or {}).get("review_focus") or (review_plan or {}).get("review_focus"))
+        repository = self._esc((review_request or {}).get("repository"))
+        branch = self._esc((review_request or {}).get("branch"))
+        commit_sha = self._esc((review_request or {}).get("commit_sha"))
+        verdict = self._esc((review_summary or {}).get("verdict", "")).upper() or "PENDING"
+        summary_text = self._esc((review_summary or {}).get("summary", "Review summary not generated yet."))
+        scenarios = ", ".join((review_plan or {}).get("scenarios", []))
+        rationale = "".join(
+            f"<li>{self._esc(item)}</li>"
+            for item in (review_plan or {}).get("rationale", [])[:6]
+        )
+        findings = "".join(
+            "<li>"
+            f"<strong>{self._esc(item.get('severity', '')).upper()}</strong>: {self._esc(item.get('summary', ''))}"
+            "</li>"
+            for item in (review_summary or {}).get("findings", [])[:5]
+        )
+
+        meta_rows = []
+        if repository:
+            meta_rows.append(f"<div><strong>Repository:</strong> {repository}</div>")
+        if branch:
+            meta_rows.append(f"<div><strong>Branch:</strong> {branch}</div>")
+        if commit_sha:
+            meta_rows.append(f"<div><strong>Commit:</strong> {commit_sha}</div>")
+        if scenarios:
+            meta_rows.append(f"<div><strong>Scenarios:</strong> {self._esc(scenarios)}</div>")
+
+        rationale_html = f"<ul>{rationale}</ul>" if rationale else "<p>No review rationale captured.</p>"
+        findings_html = f"<ul>{findings}</ul>" if findings else "<p>No review findings captured.</p>"
+
+        return f"""
+  <h2 class='section'>Review Run</h2>
+  <div style='border:1px solid #d9cab8;border-radius:12px;padding:16px;background:#fffdf8;margin-bottom:16px;'>
+    <div style='display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;'>
+      <span style='font-size:24px;font-weight:700;color:#0f6f63;'>{verdict}</span>
+      <span style='font-size:14px;color:#6b7280;'>{focus or 'Review focus pending'}</span>
+    </div>
+    <p style='font-size:14px;line-height:1.6;'>{summary_text}</p>
+    <div class='stats'>{"".join(meta_rows)}</div>
+    <h3>Planner Rationale</h3>
+    {rationale_html}
+    <h3>Findings</h3>
+    {findings_html}
+  </div>
+"""
+
     def _render(
         self,
         run_id: str,
@@ -216,6 +289,9 @@ class ReportGenerator:
         screenshot_paths: list[str],
         events: list[dict],
         ai_analysis: AnalysisReport | None = None,
+        review_request: dict | None = None,
+        review_plan: dict | None = None,
+        review_summary: dict | None = None,
         auto_refresh_seconds: int = 0,
     ) -> str:
         error_count = sum(1 for row in rows if row.get("status") == "error")
@@ -227,6 +303,7 @@ class ReportGenerator:
         events_json = json.dumps(events, ensure_ascii=True)
 
         ai_section = self._render_ai_analysis(ai_analysis, run_id)
+        review_section = self._render_review_section(review_request, review_plan, review_summary)
         auto_refresh_notice = ""
         if auto_refresh_seconds > 0:
             auto_refresh_notice = (
@@ -296,6 +373,7 @@ class ReportGenerator:
   {auto_refresh_notice}
 
   {ai_section}
+  {review_section}
 
   <h2 class='section'>Screenshots</h2>
   <div class="pager" id="shots-pager"></div>

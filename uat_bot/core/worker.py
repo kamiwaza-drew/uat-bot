@@ -67,6 +67,13 @@ class Worker:
             "test_message": self.test_message,
         }
 
+    @property
+    def _metric_context(self) -> dict[str, str]:
+        context = dict(self._user_context)
+        if context.get("password"):
+            context["password"] = "***redacted***"
+        return context
+
     async def run(self, duration_seconds: int, cancel_event: asyncio.Event) -> None:
         started = perf_counter()
         profile = get_profile(self.assignment.os_profile)
@@ -144,7 +151,7 @@ class Worker:
                         self._step = runner.step_counter
                         await self.metric_sink(
                             {
-                                **self._user_context,
+                                **self._metric_context,
                                 "run_id": self.run_id,
                                 "worker_id": self.assignment.worker_id,
                                 "action": "scenario_timeout",
@@ -180,7 +187,7 @@ class Worker:
         duration_ms = int((perf_counter() - ts_start) * 1000)
         await self.metric_sink(
             {
-                **self._user_context,
+                **self._metric_context,
                 "run_id": self.run_id,
                 "worker_id": self.assignment.worker_id,
                 "action": "heartbeat",
@@ -320,7 +327,7 @@ class Worker:
         )
         await self.metric_sink(
             {
-                **self._user_context,
+                **self._metric_context,
                 "run_id": self.run_id,
                 "worker_id": self.assignment.worker_id,
                 "action": "navigate",
@@ -360,7 +367,7 @@ class Worker:
             )
             await self.metric_sink(
                 {
-                    **self._user_context,
+                    **self._metric_context,
                     "run_id": self.run_id,
                     "worker_id": self.assignment.worker_id,
                     "action": "login",
@@ -504,7 +511,7 @@ class Worker:
                     )
                     await self.metric_sink(
                         {
-                            **self._user_context,
+                            **self._metric_context,
                             "run_id": self.run_id,
                             "worker_id": self.assignment.worker_id,
                             "action": "login",
@@ -541,7 +548,7 @@ class Worker:
             err = "unable to locate login inputs"
             await self.metric_sink(
                 {
-                    **self._user_context,
+                    **self._metric_context,
                     "run_id": self.run_id,
                     "worker_id": self.assignment.worker_id,
                     "action": "login",
@@ -564,7 +571,7 @@ class Worker:
         if is_keycloak:
             await self.metric_sink(
                 {
-                    **self._user_context,
+                    **self._metric_context,
                     "run_id": self.run_id,
                     "worker_id": self.assignment.worker_id,
                     "action": "keycloak_redirect",
@@ -606,7 +613,7 @@ class Worker:
             login_detail = f"Keycloak login completed, redirected to {page.url}"
         await self.metric_sink(
             {
-                **self._user_context,
+                **self._metric_context,
                 "run_id": self.run_id,
                 "worker_id": self.assignment.worker_id,
                 "action": "login",

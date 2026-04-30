@@ -13,7 +13,8 @@ from uat_bot.config import Settings
 from uat_bot.core.run_state import RunState
 from uat_bot.core.user_manager import KamiwazaUserManager
 from uat_bot.core.worker import Worker
-from uat_bot.models import RunCreateRequest, RunDetail, RunStatus, RunSummary
+from uat_bot.models import ReviewRunRequest, RunCreateRequest, RunDetail, RunStatus, RunSummary
+from uat_bot.review import ReviewPlanner, build_review_summary
 from uat_bot.reporting.analyzer import RunAnalyzer
 from uat_bot.reporting.generator import ReportGenerator
 from uat_bot.scenarios.uat_context import UATContextLoader
@@ -28,6 +29,7 @@ class StressOrchestrator:
         self.user_manager = KamiwazaUserManager(settings)
         self.reporter = ReportGenerator()
         self.planner = AssignmentPlanner()
+        self.review_planner = ReviewPlanner()
         self.uat_context_loader = UATContextLoader(settings)
         self._runs: dict[str, RunState] = {}
         self._lock = asyncio.Lock()
@@ -42,13 +44,34 @@ class StressOrchestrator:
             return self._runs.get(run_id)
 
     async def start_run(self, config: RunCreateRequest) -> RunState:
+        return await self._create_state(config)
+
+    async def start_review(self, request: ReviewRunRequest) -> RunState:
+        plan = self.review_planner.build_plan(request)
+        config = self.review_planner.build_run_request(request, plan)
+        return await self._create_state(config, review_request=request, review_plan=plan)
+
+    async def _create_state(
+        self,
+        config: RunCreateRequest,
+        *,
+        review_request: ReviewRunRequest | None = None,
+        review_plan=None,
+    ) -> RunState:
         run_id = uuid.uuid4().hex
         run_dir = self.settings.uat_data_dir / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        state = RunState(run_id=run_id, config=config, root_dir=run_dir)
+        state = RunState(
+            run_id=run_id,
+            config=config,
+            root_dir=run_dir,
+            review_request=review_request,
+            review_plan=review_plan,
+        )
         state.metrics_path = run_dir / "metrics.jsonl"
         state.event_log_path = run_dir / "events.jsonl"
+        self._persist_review_context(state)
 
         async with self._lock:
             self._runs[run_id] = state
@@ -98,14 +121,27 @@ class StressOrchestrator:
         runtime_cfg = self.user_manager.resolve_runtime_config(state.config)
         state.effective_kamiwaza_url = runtime_cfg.base_url or None
         state.auth_source = runtime_cfg.source
-        await state.emit(
-            "run.started",
-            {
-                "config": self._redacted_config(state.config.model_dump(mode="json")),
-                "effective_kamiwaza_url": state.effective_kamiwaza_url,
-                "auth_source": state.auth_source,
-            },
-        )
+        start_payload = {
+            "config": self._redacted_config(state.config.model_dump(mode="json")),
+            "effective_kamiwaza_url": state.effective_kamiwaza_url,
+            "auth_source": state.auth_source,
+        }
+        if state.review_request:
+            start_payload["review_request"] = self._redacted_review_request(
+                state.review_request.model_dump(mode="json")
+            )
+        if state.review_plan:
+            start_payload["review_plan"] = state.review_plan.model_dump(mode="json")
+        await state.emit("run.started", start_payload)
+        if state.review_plan:
+            await state.emit(
+                "review.planned",
+                {
+                    "review_focus": state.review_plan.review_focus,
+                    "scenarios": state.review_plan.scenarios,
+                    "rationale": state.review_plan.rationale,
+                },
+            )
 
         metric_lock = asyncio.Lock()
         screenshot_manager = ScreenshotManager(
@@ -268,6 +304,26 @@ class StressOrchestrator:
             except Exception as analysis_exc:  # noqa: BLE001
                 state.errors.append(f"ai analysis error: {analysis_exc}")
 
+            if state.review_request and state.review_plan:
+                try:
+                    state.review_summary = build_review_summary(
+                        run_id=state.run_id,
+                        request=state.review_request,
+                        plan=state.review_plan,
+                        ai_analysis=ai_analysis,
+                        state_errors=state.errors,
+                    )
+                    self._persist_review_summary(state)
+                    await state.emit(
+                        "review.summary_ready",
+                        {
+                            "verdict": state.review_summary.verdict,
+                            "review_focus": state.review_summary.review_focus,
+                        },
+                    )
+                except Exception as review_exc:  # noqa: BLE001
+                    state.errors.append(f"review summary error: {review_exc}")
+
             try:
                 state.report_path = await self.reporter.generate(
                     state.run_id, state.root_dir, ai_analysis=ai_analysis,
@@ -350,20 +406,28 @@ class StressOrchestrator:
     def _summary(self, state: RunState) -> RunSummary:
         # Determine test type from config
         test_type = "kamiwaza"
+        trigger_type = "MANUAL"
         scenarios = state.config.scenarios or []
-        if any(s.startswith("kaizen") for s in scenarios) or state.config.extension_url:
+        if state.review_request:
+            test_type = "review"
+            trigger_type = state.review_request.trigger_type.value
+        elif any(s.startswith("kaizen") for s in scenarios) or state.config.extension_url:
             test_type = "kaizen"
 
         return RunSummary(
             run_id=state.run_id,
             status=state.status,
             test_type=test_type,
+            trigger_type=trigger_type,
             created_at=state.created_at,
             started_at=state.started_at,
             ended_at=state.ended_at,
             concurrent_users=state.config.concurrent_users,
             completed_workers=state.completed_workers,
             failed_workers=state.failed_workers,
+            review_focus=state.review_plan.review_focus if state.review_plan else None,
+            review_verdict=state.review_summary.verdict if state.review_summary else None,
+            changed_files_count=len(state.review_request.changed_files) if state.review_request else 0,
         )
 
     def detail(self, state: RunState) -> RunDetail:
@@ -379,6 +443,13 @@ class StressOrchestrator:
             uat_guidance_files=state.uat_guidance.file_paths if state.uat_guidance else [],
             effective_kamiwaza_url=state.effective_kamiwaza_url,
             auth_source=state.auth_source,
+            review_request=(
+                self._redacted_review_request(state.review_request.model_dump(mode="json"))
+                if state.review_request
+                else None
+            ),
+            review_plan=state.review_plan.model_dump(mode="json") if state.review_plan else None,
+            review_summary=state.review_summary.model_dump(mode="json") if state.review_summary else None,
         )
 
     @staticmethod
@@ -388,3 +459,45 @@ class StressOrchestrator:
             if key in redacted and redacted[key]:
                 redacted[key] = "***redacted***"
         return redacted
+
+    @staticmethod
+    def _redacted_review_request(payload: dict[str, Any]) -> dict[str, Any]:
+        redacted = dict(payload)
+        if redacted.get("password"):
+            redacted["password"] = "***redacted***"
+        return redacted
+
+    def _analysis_dir(self, state: RunState) -> Path:
+        analysis_dir = state.root_dir / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        return analysis_dir
+
+    def _persist_review_context(self, state: RunState) -> None:
+        if not state.review_request or not state.review_plan:
+            return
+        analysis_dir = self._analysis_dir(state)
+        (analysis_dir / "review_request.json").write_text(
+            json.dumps(
+                self._redacted_review_request(state.review_request.model_dump(mode="json")),
+                indent=2,
+                ensure_ascii=True,
+            ),
+            encoding="utf-8",
+        )
+        (analysis_dir / "review_plan.json").write_text(
+            json.dumps(state.review_plan.model_dump(mode="json"), indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
+
+    def _persist_review_summary(self, state: RunState) -> None:
+        if not state.review_summary:
+            return
+        analysis_dir = self._analysis_dir(state)
+        (analysis_dir / "review_summary.json").write_text(
+            json.dumps(state.review_summary.model_dump(mode="json"), indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
+        (analysis_dir / "review_comment.md").write_text(
+            state.review_summary.comment_markdown,
+            encoding="utf-8",
+        )

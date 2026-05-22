@@ -5,12 +5,15 @@ _HELP_MK_ := 1
 
 .PHONY: help
 help: ## Show this help message
-	@$(call print_header,Kamiwaza Extensions Management (uat-bot))
+	@$(call print_header,Kamiwaza Extensions Management (stress-tester))
 	@echo ""
 	@echo "Usage:"
 	@echo "  make [target] [VARIABLE=value ...]"
 	@echo ""
 	@echo "$(BOLD)Quick Start:$(RESET)"
+	@echo "  make stress-serve                                              $(COMMENT)# Start the Stress Tester API$(RESET)"
+	@echo "  make stress-run SCENARIO=login                                 $(COMMENT)# Launch 20 bots on a fixed path$(RESET)"
+	@echo "  make stress-list                                               $(COMMENT)# List available scenario paths$(RESET)"
 	@echo "  make install                                                $(COMMENT)# Create .venv via uv$(RESET)"
 	@echo "  make dev                                                    $(COMMENT)# Run local docker compose$(RESET)"
 	@echo "  make test                                                   $(COMMENT)# Run pytest$(RESET)"
@@ -49,6 +52,12 @@ help: ## Show this help message
 	@echo ""
 	@$(call print_section,Dev Workflow)
 	@grep -h -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' make/dev.mk | \
+		sed 's/:.*##/##/' | \
+		sort | \
+		$(PYTHON) scripts/format-help.py
+	@echo ""
+	@$(call print_section,Stress Tester)
+	@grep -h -E '^[a-zA-Z0-9_.-]+:.*?## .*$$' make/uat.mk | \
 		sed 's/:.*##/##/' | \
 		sort | \
 		$(PYTHON) scripts/format-help.py

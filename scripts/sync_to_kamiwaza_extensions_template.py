@@ -51,7 +51,7 @@ def _run_template_python(template_repo: Path, script_and_args: list[str]) -> Non
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Copy this uat-bot folder into a kamiwaza-extensions-template repo as an app extension."
+        description="Copy this stress-tester folder into a kamiwaza-extensions-template repo as an app extension."
     )
     parser.add_argument(
         "--template-repo",
@@ -60,7 +60,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--app-name",
-        default="uat-bot",
+        default="stress-tester",
         help="App directory name under apps/",
     )
     parser.add_argument(

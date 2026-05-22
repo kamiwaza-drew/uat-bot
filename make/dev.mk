@@ -15,12 +15,12 @@ new-hybrid: ## Create hybrid extension (not applicable in app repo)
 
 .PHONY: dev
 dev: ## Run docker compose locally
-	$(call print_section,Running uat-bot via docker compose)
+	$(call print_section,Running stress-tester via docker compose)
 	@docker compose up --build
 
 .PHONY: dev-rebuild
 dev-rebuild: ## Rebuild and run docker compose
-	$(call print_section,Rebuilding uat-bot)
+	$(call print_section,Rebuilding stress-tester)
 	@docker compose build --no-cache
 	@docker compose up
 
@@ -29,8 +29,8 @@ logs: ## Show docker compose logs
 	@docker compose logs -f
 
 .PHONY: shell
-shell: ## Open shell in running container (SERVICE=uat-bot)
-	@SERVICE="$(or $(SERVICE),uat-bot)"; \
+shell: ## Open shell in running container (SERVICE=stress-tester)
+	@SERVICE="$(or $(SERVICE),stress-tester)"; \
 	docker compose exec "$$SERVICE" /bin/sh
 
 endif # _DEV_MK_

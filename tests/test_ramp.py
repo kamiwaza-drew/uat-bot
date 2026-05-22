@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uat_bot.stress.ramp import ramp_delay_seconds
+from stress_tester.stress.ramp import ramp_delay_seconds
 
 
 def test_ramp_delay_seconds():

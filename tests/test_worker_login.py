@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from uat_bot.core.worker import Worker
-from uat_bot.models import TestUser, WorkerAssignment
+from stress_tester.core.worker import Worker
+from stress_tester.models import TestUser, WorkerAssignment
 
 
 class FakeLocator:

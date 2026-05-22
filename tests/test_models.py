@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from uat_bot.models import RunCreateRequest
+from stress_tester.models import RunCreateRequest
 
 
 def test_run_create_request_distribution_must_match_concurrency():

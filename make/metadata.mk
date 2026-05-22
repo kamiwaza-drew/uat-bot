@@ -41,7 +41,7 @@ verify-images: ## Verify images (basic local check)
 	TAG="$$VERSION"; \
 	if [ "$(STAGE)" = "dev" ]; then TAG="$$TAG-dev"; fi; \
 	if [ "$(STAGE)" = "stage" ]; then TAG="$$TAG-stage"; fi; \
-	IMAGE="$(IMAGE_PREFIX)/uat-bot:$$TAG"; \
+	IMAGE="$(IMAGE_PREFIX)/stress-tester:$$TAG"; \
 	docker image inspect "$$IMAGE" >/dev/null && echo "OK: $$IMAGE"
 verify-images-registry: ## Verify images in registry (not supported)
 	@$(call print_warning,"Remote registry verification is handled in kamiwaza-extensions-template")

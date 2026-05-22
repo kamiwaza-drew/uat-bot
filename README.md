@@ -1,6 +1,6 @@
-# UAT Bot
+# Stress Tester
 
-Phase 1 implementation of the UAT bot plan:
+Phase 1 implementation of the Stress Tester plan:
 
 - FastAPI control plane (`POST /runs`, `GET /runs`, `GET /runs/{id}`, `DELETE /runs/{id}` to stop, `DELETE /runs/{id}/purge` to remove run + artifacts)
 - Provider-neutral review APIs (`POST /reviews/plan`, `POST /reviews`, `GET /reviews/{id}/summary`, `GET /reviews/{id}/comment`)
@@ -14,13 +14,34 @@ Phase 1 implementation of the UAT bot plan:
 
 ```bash
 uv sync
-uv run uat-bot
+uv run stress-tester
 ```
+
+### Spin up 20 bots on a fixed path (no LLM cost)
+
+```bash
+# Terminal 1 — start the API
+make stress-serve
+
+# Terminal 2 — launch 20 bots on a predetermined scenario
+make stress-list                                  # see available paths
+make stress-run SCENARIO=kaizen-conversation-1    # pick a path
+make stress-run SCENARIO=login USERS=50           # override the bot count
+```
+
+`stress-run` uses `vision_enabled: false` and `exploratory_pct: 0.0`, so the bots
+execute the fixed YAML steps and never call an LLM. To add your own path, drop
+a `<name>.yaml` into `stress_tester/scenarios/builtin/` and reference it as
+`SCENARIO=<name>`.
+
+> We use `SCENARIO=` (not `PATH=`) because setting `PATH=` on the Make command
+> line overrides `$PATH` for every sub-shell — curl, python, and uv would
+> stop being found.
 
 The API can now start without Kamiwaza credentials.  
 You only need `KAMIWAZA_URL` plus admin auth (`KAMIWAZA_ADMIN_TOKEN` or user/password) when launching `/runs`.
 By default local runs store artifacts in `./data` (Docker compose still uses `/data`).
-By default the API listens on `18090` (`UAT_PORT` can override this).
+By default the API listens on `18090` (`STRESS_TESTER_PORT` can override this).
 
 ## EC2 / RHEL browser prerequisites
 
@@ -32,7 +53,7 @@ sudo dnf install -y chromium firefox
 ```
 
 Notes:
-- WebKit may not run natively on some RHEL hosts; uat-bot now auto-falls back to Chromium per worker and logs the fallback event.
+- WebKit may not run natively on some RHEL hosts; stress-tester now auto-falls back to Chromium per worker and logs the fallback event.
 - If you reprovision the host, rerun the commands above.
 
 ## Docker
@@ -46,9 +67,9 @@ docker compose up --build
 This folder now includes extension-template-compatible files:
 - `kamiwaza.json`
 - `docker-compose.appgarden.yml`
-- `images/uat-bot-preview.svg`
+- `images/stress-tester-preview.svg`
 
-To copy this project into a `kamiwaza-extensions-template` repo as `apps/uat-bot` and verify compatibility:
+To copy this project into a `kamiwaza-extensions-template` repo as `apps/stress-tester` and verify compatibility:
 
 ```bash
 uv run python scripts/sync_to_kamiwaza_extensions_template.py \
@@ -60,9 +81,9 @@ After sync, the template repo can build/publish as normal:
 
 ```bash
 cd /home/ec2-user/k8s/kamiwaza-extensions-template
-make build TYPE=app NAME=uat-bot
-make push TYPE=app NAME=uat-bot STAGE=dev
-make kamiwaza-push TYPE=app NAME=uat-bot
+make build TYPE=app NAME=stress-tester
+make push TYPE=app NAME=stress-tester STAGE=dev
+make kamiwaza-push TYPE=app NAME=stress-tester
 ```
 
 ## Web UI
@@ -96,7 +117,7 @@ curl -X POST http://localhost:18090/reviews/plan \
   -H 'Content-Type: application/json' \
   -d '{
     "target_url": "https://preview.example.test/runtime/apps/kaizen/",
-    "repository": "kamiwaza/uat-bot",
+    "repository": "kamiwaza/stress-tester",
     "branch": "feature/review-runs",
     "commit_sha": "abc1234",
     "pr_title": "Improve chat workflow",
@@ -114,7 +135,7 @@ curl -X POST http://localhost:18090/reviews \
   -H 'Content-Type: application/json' \
   -d '{
     "target_url": "https://preview.example.test/runtime/apps/kaizen/",
-    "repository": "kamiwaza/uat-bot",
+    "repository": "kamiwaza/stress-tester",
     "pr_title": "Improve chat workflow",
     "changed_files": [
       "apps/kaizen/src/components/ChatComposer.tsx",
@@ -145,7 +166,7 @@ Discover available `.uat` contexts:
 curl 'http://localhost:18090/uat/contexts?component=graphiti'
 ```
 
-Set `UAT_EXTENSION_ROOTS` to a comma-separated list of repo paths or globs if your extension repos live elsewhere.
+Set `STRESS_TESTER_EXTENSION_ROOTS` to a comma-separated list of repo paths or globs if your extension repos live elsewhere.
 
 Current `.uat` behavior:
 - No strict file schema is required.

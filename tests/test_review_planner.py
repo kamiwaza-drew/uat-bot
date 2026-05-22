@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from uat_bot.models import ReviewRunRequest
-from uat_bot.review.planner import ReviewPlanner
+from stress_tester.models import ReviewRunRequest
+from stress_tester.review.planner import ReviewPlanner
 
 
 def test_review_planner_matches_kaizen_chat_signals():

@@ -11,6 +11,7 @@ include make/metadata.mk
 include make/templates.mk
 include make/dev.mk
 include make/demo.mk
+include make/stress.mk
 include make/help.mk
 
 .DEFAULT_GOAL := help

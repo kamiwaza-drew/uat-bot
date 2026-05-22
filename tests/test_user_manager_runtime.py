@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from uat_bot.core.user_manager import KamiwazaUserManager
-from uat_bot.models import RunCreateRequest
+from stress_tester.core.user_manager import KamiwazaUserManager
+from stress_tester.models import RunCreateRequest
 
 
 def _run_config(**kwargs) -> RunCreateRequest:

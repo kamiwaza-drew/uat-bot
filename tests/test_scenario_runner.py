@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from uat_bot.scenarios.loader import Scenario, ScenarioStep
-from uat_bot.scenarios.runner import ScenarioRunner, StepResult
+from stress_tester.scenarios.loader import Scenario, ScenarioStep
+from stress_tester.scenarios.runner import ScenarioRunner, StepResult
 
 
 @pytest.mark.asyncio

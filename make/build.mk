@@ -7,13 +7,13 @@ STAGE ?= dev
 PLATFORMS ?= linux/amd64,linux/arm64
 
 .PHONY: build
-build: ## Build extension image (uat-bot) - usage: make build [IMAGE_PREFIX=org]
+build: ## Build extension image (stress-tester) - usage: make build [IMAGE_PREFIX=org]
 	$(call print_section,Building Docker image)
 	@VERSION=$$($(PYTHON) scripts/get-version.py); \
 	TAG="$$VERSION"; \
 	if [ "$(STAGE)" = "dev" ]; then TAG="$$TAG-dev"; fi; \
 	if [ "$(STAGE)" = "stage" ]; then TAG="$$TAG-stage"; fi; \
-	IMAGE="$(IMAGE_PREFIX)/uat-bot:$$TAG"; \
+	IMAGE="$(IMAGE_PREFIX)/stress-tester:$$TAG"; \
 	echo "Building $$IMAGE"; \
 	docker build -t "$$IMAGE" .
 
@@ -24,7 +24,7 @@ build-no-cache: ## Build extension without cache
 	TAG="$$VERSION"; \
 	if [ "$(STAGE)" = "dev" ]; then TAG="$$TAG-dev"; fi; \
 	if [ "$(STAGE)" = "stage" ]; then TAG="$$TAG-stage"; fi; \
-	IMAGE="$(IMAGE_PREFIX)/uat-bot:$$TAG"; \
+	IMAGE="$(IMAGE_PREFIX)/stress-tester:$$TAG"; \
 	echo "Building $$IMAGE"; \
 	docker build --no-cache -t "$$IMAGE" .
 
@@ -43,7 +43,7 @@ push: ## Push image - usage: make push [STAGE=dev|stage|prod] [BUILD=1]
 	TAG="$$VERSION"; \
 	if [ "$(STAGE)" = "dev" ]; then TAG="$$TAG-dev"; fi; \
 	if [ "$(STAGE)" = "stage" ]; then TAG="$$TAG-stage"; fi; \
-	IMAGE="$(IMAGE_PREFIX)/uat-bot:$$TAG"; \
+	IMAGE="$(IMAGE_PREFIX)/stress-tester:$$TAG"; \
 	if [ "$(BUILD)" = "1" ]; then $(MAKE) build STAGE=$(STAGE); fi; \
 	echo "Pushing $$IMAGE"; \
 	docker push "$$IMAGE"
@@ -69,7 +69,7 @@ publish-dry-run: ## Show what would be published
 	TAG="$$VERSION"; \
 	if [ "$(STAGE)" = "dev" ]; then TAG="$$TAG-dev"; fi; \
 	if [ "$(STAGE)" = "stage" ]; then TAG="$$TAG-stage"; fi; \
-	IMAGE="$(IMAGE_PREFIX)/uat-bot:$$TAG"; \
+	IMAGE="$(IMAGE_PREFIX)/stress-tester:$$TAG"; \
 	echo "Would build and push $$IMAGE"
 
 endif # _BUILD_MK_

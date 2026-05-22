@@ -17,7 +17,7 @@ templates-list-deployments: templates-list ## Alias
 
 .PHONY: kamiwaza-push kamiwaza-list templates-inspect kind-load-images kind-load-images-dry-run
 kamiwaza-push: ## Push template to Kamiwaza (supported in template repo only)
-	@$(call print_warning,"Use kamiwaza-extensions-template for garden push (make kamiwaza-push TYPE=app NAME=uat-bot)")
+	@$(call print_warning,"Use kamiwaza-extensions-template for garden push (make kamiwaza-push TYPE=app NAME=stress-tester)")
 kamiwaza-list: ## List templates on Kamiwaza (supported in template repo only)
 	@$(call print_warning,"Use kamiwaza-extensions-template for garden list")
 templates-inspect: ## Inspect template details (supported in template repo only)

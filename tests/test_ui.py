@@ -4,7 +4,7 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
-create_app = pytest.importorskip("uat_bot.main").create_app
+create_app = pytest.importorskip("stress_tester.main").create_app
 
 
 def test_root_route_serves_ui():
@@ -12,7 +12,7 @@ def test_root_route_serves_ui():
     with TestClient(app) as client:
         response = client.get("/")
         assert response.status_code == 200
-        assert "UAT Bot Control Center" in response.text
+        assert "Stress Tester Control Center" in response.text
         assert "Scenario Paths" in response.text
         assert "Review Run" in response.text
 

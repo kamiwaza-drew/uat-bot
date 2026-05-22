@@ -3,14 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from uat_bot.scenarios.uat_context import UATContextLoader
+from stress_tester.scenarios.uat_context import UATContextLoader
 
 
 def _settings(extension_roots: str, max_files: int = 12, max_chars: int = 4000):
     return SimpleNamespace(
-        uat_extension_roots=extension_roots,
-        uat_guidance_max_files=max_files,
-        uat_guidance_max_chars_per_file=max_chars,
+        stress_tester_extension_roots=extension_roots,
+        stress_tester_guidance_max_files=max_files,
+        stress_tester_guidance_max_chars_per_file=max_chars,
     )
 
 

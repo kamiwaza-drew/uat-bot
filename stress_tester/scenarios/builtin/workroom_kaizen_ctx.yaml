@@ -1,0 +1,506 @@
+name: workroom_kaizen_ctx
+description: Create a new workroom, open its runtime (Kaizen), then create 3 threads designed to stress the context manager (long-context condensation, many-turn recall, tool_use/tool_result mismatch recovery).
+timeout: 900
+required_role: editor
+tags: [workroom, kaizen, context_manager, stress]
+
+steps:
+  # ─── Phase 1: Create a new workroom ───────────────────────────────
+  - action: navigate
+    url: /workrooms
+    wait_for: networkidle
+
+  - action: screenshot
+    screenshot_name: 01_workrooms_landing
+
+  # Click "New workroom" button (WorkroomManager.js:785)
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const target = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new workroom'));
+        if (!target) {
+          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 40));
+          return 'ERROR: New workroom button not found. Buttons: [' + labels.slice(0, 20).join(' | ') + ']';
+        }
+        target.click();
+        return 'OK: Clicked New workroom';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: 02_new_workroom_modal
+
+  # Fill in workroom name. WorkroomFormDialog uses a TextField with label "Name".
+  # MUI typically renders as input[name="name"] but may be unnamed — try several.
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrName = 'ctx-mgr-uat-' + Date.now().toString(36);
+        // Find the Name field — try by name attr, then by aria-label, then first input in dialog
+        const dialog = document.querySelector('[role="dialog"]') || document.body;
+        let nameInput = dialog.querySelector('input[name="name"]')
+          || dialog.querySelector('input[aria-label*="Name" i]')
+          || dialog.querySelector('input[type="text"]');
+        if (!nameInput) return 'ERROR: Name input not found in dialog';
+
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(nameInput, wrName);
+        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+        nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+        // Stash the workroom name on window so later steps can reference it
+        window.__uat_workroom_name = wrName;
+        return 'OK: Filled name=' + wrName;
+      })()
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: 03_workroom_name_filled
+
+  # Submit — button text is "Create workroom" (WorkroomFormDialog.js:128)
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const submit = btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t === 'create workroom' || t.includes('create workroom');
+        });
+        if (!submit) {
+          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 40));
+          return 'ERROR: Create workroom submit not found. Buttons: [' + labels.slice(0, 30).join(' | ') + ']';
+        }
+        submit.click();
+        return 'OK: Submitted workroom create';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 4
+
+  - action: screenshot
+    screenshot_name: 04_after_workroom_create
+
+  # ─── Phase 2: Open the runtime (this IS the kaizen launch) ────────
+  # WorkroomManager.js:983 — "Open runtime" navigates to /workrooms/{id}/runtime
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button, a'));
+        const open = btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t === 'open runtime' || t.includes('open runtime');
+        });
+        if (!open) {
+          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 30)).filter(Boolean);
+          return 'ERROR: Open runtime button not found. Controls: [' + labels.slice(0, 30).join(' | ') + ']';
+        }
+        open.click();
+        return 'OK: Clicked Open runtime';
+      })()
+    timeout: 10
+
+  - action: wait_for_url
+    value: /runtime
+    timeout: 60
+
+  - action: sleep
+    timeout: 5
+
+  - action: screenshot
+    screenshot_name: 05_runtime_loaded
+
+  # ─── Phase 3: Three threads, each stressing context manager differently ───
+
+  # Helper inlined per thread because stress-tester has no loop construct.
+  # Each thread uses the "New thread" button (WorkroomThreadList.js:105)
+  # then fills "Thread title" and "Opening message" → clicks "Create".
+
+  # ┌─ Thread 1: Long-context condensation ─────────────────────────┐
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const nt = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new thread'));
+        if (!nt) return 'ERROR: New thread button not found';
+        nt.click();
+        return 'OK: Opened new-thread form (thread 1)';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: js_eval
+    value: |
+      (async () => {
+        // Find the form — usually an inline panel in the thread list sidebar
+        const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'));
+        const titleInput = inputs.find(i =>
+          (i.placeholder || '').toLowerCase().includes('title') ||
+          (i.getAttribute('aria-label') || '').toLowerCase().includes('title')
+        ) || inputs[0];
+        const msgInput = inputs.find(i =>
+          i.tagName === 'TEXTAREA' &&
+          ((i.placeholder || '').toLowerCase().includes('message') ||
+           (i.getAttribute('aria-label') || '').toLowerCase().includes('message'))
+        ) || inputs.find(i => i.tagName === 'TEXTAREA' && i !== titleInput);
+
+        if (!titleInput || !msgInput) return 'ERROR: Could not locate title/message inputs. Found ' + inputs.length + ' inputs.';
+
+        // Build a long opening: planted fact at the very start, then ~8KB of filler.
+        const planted = 'IMPORTANT FACT (remember this exact value): the activation code is 7-ZULU-MIKE-42.';
+        const filler = Array.from({length: 60}, (_, i) =>
+          'Filler paragraph ' + (i + 1) + ': lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.'
+        ).join('\n\n');
+        const tail = 'After reading all of the above filler, respond with just the words "READY" — do not echo the filler.';
+        const longMsg = planted + '\n\n' + filler + '\n\n' + tail;
+
+        const setText = (el, v) => {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setText(titleInput, 'ctx1-long-condensation');
+        setText(msgInput, longMsg);
+        return 'OK: Filled thread 1 (title=' + titleInput.value.substring(0, 30) + ', msgLen=' + msgInput.value.length + ')';
+      })()
+    timeout: 15
+
+  - action: screenshot
+    screenshot_name: 06_thread1_filled
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const create = btns.find(b => (b.textContent || '').trim().toLowerCase() === 'create');
+        if (!create) return 'ERROR: Create (thread submit) button not found';
+        create.click();
+        return 'OK: Submitted thread 1';
+      })()
+    timeout: 10
+
+  # Give the agent time to ingest the long context and respond.
+  - action: sleep
+    timeout: 60
+
+  - action: screenshot
+    screenshot_name: 07_thread1_first_response
+
+  # Send a follow-up that requires the planted fact (tests condensation recall).
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea'));
+        // Composer textarea is usually the largest visible empty textarea, or last one.
+        const composer = tas.reverse().find(t => {
+          const r = t.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly;
+        });
+        if (!composer) return 'ERROR: Composer textarea not found';
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, 'What was the activation code I mentioned at the very beginning of this conversation? Respond with just the code, no other text.');
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new Event('change', { bubbles: true }));
+        // Submit via Enter
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent recall follow-up (thread 1)';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 40
+
+  - action: screenshot
+    screenshot_name: 08_thread1_recall_response
+
+  # Navigate back to the runtime view to spawn thread 2
+  # (the thread list sidebar should remain visible inside the runtime)
+
+  # ┌─ Thread 2: Many short turns + recall ─────────────────────────┐
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const nt = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new thread'));
+        if (!nt) return 'ERROR: New thread button not found for thread 2';
+        nt.click();
+        return 'OK: Opened new-thread form (thread 2)';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'));
+        const titleInput = inputs.find(i =>
+          (i.placeholder || '').toLowerCase().includes('title')
+        ) || inputs[0];
+        const msgInput = inputs.find(i =>
+          i.tagName === 'TEXTAREA' && (i.placeholder || '').toLowerCase().includes('message')
+        ) || inputs.find(i => i.tagName === 'TEXTAREA' && i !== titleInput);
+        if (!titleInput || !msgInput) return 'ERROR: Inputs not found for thread 2';
+
+        const setText = (el, v) => {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setText(titleInput, 'ctx2-many-turns-recall');
+        setText(msgInput, 'I am going to give you a series of facts one at a time. Acknowledge each with just "noted" and remember them all. First fact: my favorite color is cerulean.');
+        return 'OK: Filled thread 2';
+      })()
+    timeout: 10
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const create = btns.find(b => (b.textContent || '').trim().toLowerCase() === 'create');
+        if (!create) return 'ERROR: Create button not found for thread 2';
+        create.click();
+        return 'OK: Submitted thread 2';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 25
+
+  - action: screenshot
+    screenshot_name: 09_thread2_started
+
+  # Fire 6 short fact-turns. Each is sent via the composer textarea.
+  # We loop in a single js_eval that sends one message, waits, and reports.
+  # Then we sleep+screenshot between turns from YAML.
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const msgs = [
+          'Second fact: my lucky number is 17.',
+          'Third fact: I was born in Reykjavik.',
+          'Fourth fact: my favorite food is gnocchi.',
+          'Fifth fact: my dog is named Pomegranate.',
+          'Sixth fact: my hobby is competitive whistling.',
+          'Seventh fact: the meeting is at 14:30.'
+        ];
+        window.__uat_pending = msgs;
+        return 'OK: Queued ' + msgs.length + ' facts';
+      })()
+    timeout: 5
+
+  # Send fact 2
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: No composer';
+        const msg = window.__uat_pending.shift();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent fact 2';
+      })()
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  # Send fact 3
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: No composer';
+        const msg = window.__uat_pending.shift();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent fact 3';
+      })()
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  # Send fact 4
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: No composer';
+        const msg = window.__uat_pending.shift();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent fact 4';
+      })()
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  # Send fact 5
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: No composer';
+        const msg = window.__uat_pending.shift();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent fact 5';
+      })()
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  # Send fact 6
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: No composer';
+        const msg = window.__uat_pending.shift();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent fact 6';
+      })()
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  # Send fact 7
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: No composer';
+        const msg = window.__uat_pending.shift();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent fact 7';
+      })()
+    timeout: 10
+  - action: sleep
+    timeout: 15
+
+  - action: screenshot
+    screenshot_name: 10_thread2_after_facts
+
+  # Recall question — tests memory across many turns post-condensation
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: No composer';
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, 'List back every fact I told you, in order. Number them 1 through 7. Do not paraphrase, use the exact wording.');
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        return 'OK: Sent recall request (thread 2)';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 40
+
+  - action: screenshot
+    screenshot_name: 11_thread2_recall_response
+
+  # ┌─ Thread 3: Tool-chain → exercise tool_use/tool_result tracking ─┐
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const nt = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new thread'));
+        if (!nt) return 'ERROR: New thread button not found for thread 3';
+        nt.click();
+        return 'OK: Opened new-thread form (thread 3)';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'));
+        const titleInput = inputs.find(i => (i.placeholder || '').toLowerCase().includes('title')) || inputs[0];
+        const msgInput = inputs.find(i => i.tagName === 'TEXTAREA' && (i.placeholder || '').toLowerCase().includes('message'))
+          || inputs.find(i => i.tagName === 'TEXTAREA' && i !== titleInput);
+        if (!titleInput || !msgInput) return 'ERROR: Inputs not found for thread 3';
+
+        const setText = (el, v) => {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setText(titleInput, 'ctx3-tool-chain-mismatch');
+        // A chained tool sequence that has historically tripped tool_use/tool_result
+        // history-mismatch recovery (kamiwaza conversation_manager.py:1394 path).
+        setText(msgInput,
+          'Execute this exact sequence WITHOUT stopping to ask questions:\n' +
+          '1. List the files in the current directory.\n' +
+          '2. Create a file ctx_a.txt with the contents "alpha".\n' +
+          '3. Read ctx_a.txt and tell me its contents.\n' +
+          '4. Create a file ctx_b.txt with the contents "beta".\n' +
+          '5. Read ctx_b.txt and tell me its contents.\n' +
+          '6. Delete ctx_a.txt.\n' +
+          '7. List files again.\n' +
+          '8. Create ctx_c.txt with contents "gamma".\n' +
+          '9. Read all three files (a, b, c) and report their contents — note which no longer exist.\n' +
+          'After all 9 steps complete, summarize what you did in one sentence.'
+        );
+        return 'OK: Filled thread 3';
+      })()
+    timeout: 15
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const create = btns.find(b => (b.textContent || '').trim().toLowerCase() === 'create');
+        if (!create) return 'ERROR: Create button not found for thread 3';
+        create.click();
+        return 'OK: Submitted thread 3';
+      })()
+    timeout: 10
+
+  # Tool-chain is long-running — give it generous time.
+  - action: sleep
+    timeout: 120
+
+  - action: screenshot
+    screenshot_name: 12_thread3_tool_chain
+    validate:
+      - no_errors: true
+
+  # ─── Final state capture ──────────────────────────────────────────
+  - action: screenshot
+    screenshot_name: 99_final_runtime_state

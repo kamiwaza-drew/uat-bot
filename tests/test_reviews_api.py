@@ -6,12 +6,12 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
-create_app = pytest.importorskip("uat_bot.main").create_app
-config_module = pytest.importorskip("uat_bot.config")
+create_app = pytest.importorskip("stress_tester.main").create_app
+config_module = pytest.importorskip("stress_tester.config")
 
 
 def test_review_plan_endpoint_returns_plan_and_run_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("UAT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("STRESS_TESTER_DATA_DIR", str(tmp_path))
     config_module.get_settings.cache_clear()
     app = create_app()
     try:
@@ -37,7 +37,7 @@ def test_review_plan_endpoint_returns_plan_and_run_config(tmp_path, monkeypatch)
 
 
 def test_review_summary_endpoint_reads_summary_from_disk(tmp_path, monkeypatch):
-    monkeypatch.setenv("UAT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("STRESS_TESTER_DATA_DIR", str(tmp_path))
     config_module.get_settings.cache_clear()
     app = create_app()
     run_id = "review-run-1"

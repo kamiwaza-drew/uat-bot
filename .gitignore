@@ -25,7 +25,7 @@ ENV/
 htmlcov/
 .coverage
 
-# UAT results (large, generated)
+# Stress Tester results (large, generated)
 data/runs/
 *.har
 

@@ -4,8 +4,8 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
-create_app = pytest.importorskip("uat_bot.main").create_app
-config_module = pytest.importorskip("uat_bot.config")
+create_app = pytest.importorskip("stress_tester.main").create_app
+config_module = pytest.importorskip("stress_tester.config")
 
 
 def _payload() -> dict:
@@ -22,7 +22,7 @@ def _payload() -> dict:
 
 
 def test_purge_run_removes_run_and_artifacts(tmp_path, monkeypatch):
-    monkeypatch.setenv("UAT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("STRESS_TESTER_DATA_DIR", str(tmp_path))
     config_module.get_settings.cache_clear()
     app = create_app()
     try:
@@ -48,7 +48,7 @@ def test_purge_run_removes_run_and_artifacts(tmp_path, monkeypatch):
 
 
 def test_purge_missing_run_returns_404(tmp_path, monkeypatch):
-    monkeypatch.setenv("UAT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("STRESS_TESTER_DATA_DIR", str(tmp_path))
     config_module.get_settings.cache_clear()
     app = create_app()
     try:
@@ -60,7 +60,7 @@ def test_purge_missing_run_returns_404(tmp_path, monkeypatch):
 
 
 def test_snapshot_includes_metrics_events_and_screenshots(tmp_path, monkeypatch):
-    monkeypatch.setenv("UAT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("STRESS_TESTER_DATA_DIR", str(tmp_path))
     config_module.get_settings.cache_clear()
     app = create_app()
     try:

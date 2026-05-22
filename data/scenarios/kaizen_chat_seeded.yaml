@@ -44,7 +44,7 @@ steps:
         const modelName = deployment.m_name ? `openai/${deployment.m_name}` : 'openai/test-model';
         const payload = {
           name: agentName,
-          description: 'Seeded by UAT bot for chat coverage.',
+          description: 'Seeded by Stress Tester for chat coverage.',
           agent_config: {
             llm: {
               provider: 'kamiwaza',

@@ -47,7 +47,7 @@ steps:
         const modelName = deployment.m_name ? `openai/${deployment.m_name}` : 'openai/test-model';
         const payload = {
           name: agentName,
-          description: 'Seeded by UAT bot for duplicate and autosave coverage.',
+          description: 'Seeded by Stress Tester for duplicate and autosave coverage.',
           agent_config: {
             llm: {
               provider: 'kamiwaza',
@@ -181,7 +181,7 @@ steps:
           setNative(descriptionArea, 'UAT autosave check');
         }
         if (customInstructionsArea) {
-          setNative(customInstructionsArea, 'Autosave verified by UAT bot');
+          setNative(customInstructionsArea, 'Autosave verified by Stress Tester');
         }
 
         await new Promise(r => setTimeout(r, 2000));

@@ -6,8 +6,8 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
-create_app = pytest.importorskip("uat_bot.main").create_app
-builder_api = pytest.importorskip("uat_bot.api.builder")
+create_app = pytest.importorskip("stress_tester.main").create_app
+builder_api = pytest.importorskip("stress_tester.api.builder")
 
 
 def test_builder_explore_stream_includes_log_events(monkeypatch):

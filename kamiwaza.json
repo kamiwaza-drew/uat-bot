@@ -1,6 +1,6 @@
 {
-  "name": "uat-bot",
-  "display_name": "UAT Bot",
+  "name": "stress-tester",
+  "display_name": "Stress Tester",
   "template_type": "app",
   "version": "0.1.0",
   "kamiwaza_version": ">=0.10.0",
@@ -9,7 +9,7 @@
   "description": "Containerized vision-guided stress testing bot for Kamiwaza.",
   "risk_tier": 1,
   "verified": false,
-  "preview_image": "images/uat-bot-preview.svg",
+  "preview_image": "images/stress-tester-preview.svg",
   "tags": [
     "uat",
     "playwright",
@@ -20,6 +20,6 @@
   "env_defaults": {
     "KAMIWAZA_URL": "{kamiwaza_origin}",
     "KAMIWAZA_ADMIN_USER": "admin",
-    "UAT_PORT": "18090"
+    "STRESS_TESTER_PORT": "18090"
   }
 }

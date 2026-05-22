@@ -43,7 +43,7 @@ steps:
         const modelName = deployment.m_name ? `openai/${deployment.m_name}` : 'openai/test-model';
         const payload = {
           name: agentName,
-          description: 'Seeded by UAT bot for edit and autosave coverage.',
+          description: 'Seeded by Stress Tester for edit and autosave coverage.',
           agent_config: {
             llm: {
               provider: 'kamiwaza',
@@ -113,7 +113,7 @@ steps:
 
   - action: fill
     target: "textarea[placeholder='Add custom instructions for your agent...']"
-    value: "Autosave verified by UAT bot"
+    value: "Autosave verified by Stress Tester"
 
   - action: click
     target: "button:has-text('Skills')"

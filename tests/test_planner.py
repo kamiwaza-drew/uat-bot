@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from uat_bot.models import TestUser
-from uat_bot.stress.planner import AssignmentPlanner
+from stress_tester.models import TestUser
+from stress_tester.stress.planner import AssignmentPlanner
 
 
 def test_assignment_planner_generates_expected_assignments():

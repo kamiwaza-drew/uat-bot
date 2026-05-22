@@ -56,7 +56,7 @@ steps:
           },
           body: JSON.stringify({
             name: recipeName,
-            notes: 'Created by UAT bot to validate the recipe library.',
+            notes: 'Created by Stress Tester to validate the recipe library.',
             tool_name: 'terminal',
             tool_arguments: { command: 'pwd' },
             tool_result: { stdout: '/home/ec2-user/k8s' },

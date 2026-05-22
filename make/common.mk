@@ -18,7 +18,7 @@ export IMAGE_PREFIX
 
 # App identity (this repo is a single app)
 TYPE_DEFAULT := app
-NAME_DEFAULT := uat-bot
+NAME_DEFAULT := stress-tester
 
 TYPE ?= $(TYPE_DEFAULT)
 NAME ?= $(NAME_DEFAULT)

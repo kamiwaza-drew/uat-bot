@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from uat_bot.reporting.generator import ReportGenerator
+from stress_tester.reporting.generator import ReportGenerator
 
 
 def test_report_includes_event_logs_section(tmp_path):
@@ -75,7 +75,7 @@ def test_report_includes_review_section_when_artifacts_exist(tmp_path):
         json.dumps(
             {
                 "target_url": "https://preview.example.test",
-                "repository": "kamiwaza/uat-bot",
+                "repository": "kamiwaza/stress-tester",
                 "branch": "feature/review-runs",
                 "commit_sha": "abc1234",
             }
@@ -108,6 +108,6 @@ def test_report_includes_review_section_when_artifacts_exist(tmp_path):
     html = report_path.read_text(encoding="utf-8")
 
     assert "Review Run" in html
-    assert "kamiwaza/uat-bot" in html
+    assert "kamiwaza/stress-tester" in html
     assert "settings and preferences flows" in html
     assert "Save button looked disabled." in html

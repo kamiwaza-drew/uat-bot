@@ -1,15 +1,31 @@
 # Load Test Report — Kamiwaza 0.13.1 vs 0.13.0 Workroom-Launched Kaizen Flow
 
-**Date:** 2026-05-24 (rev 2 — full-stack 0.13.1 re-pin)
+**Date:** 2026-05-24 (rev 3 — stale-maxPods bug invalidates rev 1 + rev 2 headline numbers)
 **Target build under test:** Kamiwaza `release/0.13.1` across **every repo with a `release/0.13.1` branch** (rev 1 only pinned `core` + `frontend`).
 **Comparison baseline:** Kamiwaza `release/0.13.0` (`:develop` core image at the time)
 **Host:** `kamiwaza-dev-control-plane` — single-node kind+podman cluster on `hpe-demo-0130.westus2.cloudapp.azure.com`
 **Driver:** `uat-bot` stress-tester, scenario `workroom_kaizen_ctx`
 **Bot population for the headline test:** **20 concurrent admin users** (was 1 per run on 0.13.0)
 
+## ⚠️ Read this first — rev 3 correction
+
+**The "cluster wedges at 100 Running pods" headline in rev 1 and rev 2 was caused by a stale kubelet config, not by anything architectural in Kamiwaza.** The kind cluster on this host was created on **2026-05-19** from an Ansible template that did not yet declare `maxPods`; the kubelet defaulted to **110**. Three days later, ENG-5711 (#282, 2026-05-22) added `maxPods: 1000` to `ansible/roles/kind_cluster/templates/kind-cluster.yaml.j2`, but the running cluster was never recreated to pick it up. Both prior 20-bot runs were hitting the kubeadm default, not the intended ceiling.
+
+After `make clean && ./scripts/install-dev.sh --dev-full` against the current Ansible template, the regenerated cluster reports **`allocatable_pods=1000`** — the configured ceiling actually lands. So all of the rev-1 / rev-2 framing about "architectural ceiling at the kubelet pod cap" applied to the wrong cap.
+
+**What this means for the headline numbers (rev 1 + rev 2):**
+- The "100 Running plateau" + the "100+ Pending forever" + the implication that 20 concurrent workrooms × 11 pods = 220 pods is "structurally infeasible" are all consequences of the 110-pod cap that wasn't supposed to be there.
+- At the intended 1000-pod ceiling, 20 workrooms × 11 = 220 pods would fit comfortably with 700+ pods of headroom. The cluster might still wedge under load (etcd throughput, kube-scheduler throughput, host CPU/memory, network), or it might not — that retest hasn't been completed yet (see "What rev 3 did not finish" below).
+- The "shared Milvus + shared Graphiti to drop per-workroom cost from 11 → 3" recommendation is still good engineering, but its framing as "the only durable fix" was overstated.
+- The 401 auth-gateway burst (rev 1) and the `Page.goto /workrooms` timeouts (rev 2) are still real platform-layer findings, independent of pod budget.
+
+**Fix shipped:** the Ansible template is already correct on `release/0.13.1`. Any fresh cluster bootstrap will land `maxPods=1000`. Clusters created before 2026-05-22 need a `make clean && ./scripts/install-dev.sh --dev-full` to pick it up.
+
 ## What changed since rev 1
 
-Rev 1 of this report pinned only the **Kamiwaza platform** to `release/0.13.1` (core + frontend) and left the extension stack on whatever happened to be cached on the node. After feedback ("Bad — entire stack where possible should be 0.13.1") rev 2 walks every cloned repo to `release/0.13.1` if that branch exists on the remote. The 20-bot stress run was re-fired against this uniform stack and the failure profile shifted — the 401 auth-gateway burst from rev 1 did not reappear, but a new dominant failure (10/20 timing out on `Page.goto /workrooms`) emerged. The architectural ceiling (cluster wedges at 100 Running pods) is identical.
+Rev 1 of this report pinned only the **Kamiwaza platform** to `release/0.13.1` (core + frontend) and left the extension stack on whatever happened to be cached on the node. After feedback ("Bad — entire stack where possible should be 0.13.1") rev 2 walks every cloned repo to `release/0.13.1` if that branch exists on the remote. The 20-bot stress run was re-fired against this uniform stack and the failure profile shifted — the 401 auth-gateway burst from rev 1 did not reappear, but a new dominant failure (10/20 timing out on `Page.goto /workrooms`) emerged. **Both rev-1 and rev-2 runs were on the stale-maxPods cluster — see warning above; the "cluster wedge at 100 pods" pattern in both is the stale-config bug, not Kamiwaza architecture.**
+
+Rev 3 recreated the cluster from the current Ansible template, validated that the kubelet now reports `allocatable_pods=1000`, then attempted to re-fire the 20-bot test. The re-fire is blocked on install-bootstrap issues unrelated to the maxPods fix — see "What rev 3 did not finish" below.
 
 See "Source pin-down" below for exact branch + commit per repo.
 
@@ -109,13 +125,15 @@ Timeline of pod budget on the single 110-pod node:
 | T+303s   | ~120 | **100** | 3 | 10 | 76 |
 | T+333s   | ~120 | **100** | 3 | 10 | 76 |
 
-Running pods plateaued at exactly **100** (the practical kubelet ceiling on this node), Pending plateaued at 3, ImagePullBackOff plateaued at ~10. Steady-state wedge ≈ T+3 min and never recovered. **Same shape as rev 1 and the 0.13.0 report** — the platform has no backpressure regardless of release.
+Running pods plateaued at exactly **100** — and per the rev-3 correction at the top of this report, that "100" is the kubeadm-default `maxPods=110` ceiling that this cluster was created under before ENG-5711 added `maxPods: 1000` to the Ansible template. Same shape as rev 1 and the 0.13.0 report because all three runs were on the same misconfigured kubelet. **The pattern is real, the root cause was misattributed.** See rev-3 correction at top of report.
 
-## Findings (consolidated across rev 1 + rev 2)
+## Findings (consolidated across rev 1 + rev 2, with rev-3 corrections inline)
 
-### Finding #1 — Per-workroom pod cost is unchanged at ~11 pods (architectural ceiling)
+### Finding #1 — Per-workroom pod cost is ~11 pods (architectural — but ceiling is 1000 not 110)
 
-A single workroom spawns: kaizen×4 (backend, frontend, controller, postgres) + milvus×4 + graphiti×2 + omniparse×1. On the 110-pod single-node cluster, ceiling is ~7 concurrent workrooms before the scheduler runs out of room. This was the prediction from the 0.13.0 report and rev 2 confirms it stands on 0.13.1.
+A single workroom spawns: kaizen×4 (backend, frontend, controller, postgres) + milvus×4 + graphiti×2 + omniparse×1. On a properly-configured single-node cluster with `maxPods=1000`, the structural ceiling is **~90 concurrent workrooms** (1000 ÷ 11) minus system pods, not the **~7** that rev 1 + rev 2 quoted. Sharing Milvus + Graphiti is still good engineering (drops marginal cost per workroom, improves cold-start time, reduces resource fragmentation), but it is not "the only durable fix" — the cluster headroom story is far less dire than rev 1 + rev 2 implied.
+
+**Recommendation (corrected):** ship the maxPods Ansible-template fix to any field/demo cluster (the template already has it on `release/0.13.1`; any cluster created before 2026-05-22 needs to be recreated). Re-run this stress test against the corrected ceiling before deciding the workroom architecture itself needs to change.
 
 ### Finding #2 — Marketplace catalog requests `service-milvus:2.3.0` which doesn't exist on GHCR (new in rev 2)
 
@@ -213,9 +231,48 @@ The rev-1 run's `data/runs/42b326ad147240569d065671af5d5543/events.jsonl` has ex
 
 Independent of #3 above. The `kamiwaza-engineering-marketplace` push pipeline tags workroom-manager `:0.6.19-dev` when run with `STAGE=dev` (default), but GHCR only has `:0.6.19`. Same class of bug as #3; same class of fix.
 
+## What rev 3 did not finish — install-bootstrap blockers
+
+After validating that the recreated cluster reports `maxPods=1000`, the planned 20-bot rerun was blocked on two pre-existing install-bootstrap bugs that surface on any fresh deploy of `release/0.13.1` (independent of maxPods):
+
+### Blocker A — Missing `core-s3` secret on fresh installs (chart contract gap)
+
+`cluster/values/overrides.yaml` declares a `credentialsSecretRef` pointing at a Kubernetes secret named `core-s3`, but no chart template or Ansible role creates that secret. On a fresh install, `core-raycluster-head` goes `CreateContainerConfigError` with `Error: secret "core-s3" not found`, which blocks `core-scheduler` (which waits on Ray GCS to be reachable).
+
+Workaround applied during rev 3 for testing: `kubectl create secret generic core-s3 -n kamiwaza --from-literal=access_key_id=local-dev-stub --from-literal=secret_access_key=local-dev-stub`. Real fix: either (a) make the chart create the secret with a placeholder when local-dev mode is selected, (b) ship a one-shot Ansible task that creates it, or (c) remove the `credentialsSecretRef` from `overrides.yaml` when S3 isn't actually configured.
+
+### Blocker B — `init-keycloak-users` post-install hook + `core-db-init` post-install hook deadlock
+
+Two relevant hooks in the kamiwaza umbrella chart, both `helm.sh/hook: post-install,post-upgrade`:
+
+- `core-db-init` (weight `-5`) — initializes the scheduler's Postgres schema. `core-scheduler` has an `initContainer` (`wait-for-deps`) that polls for the schema to exist and times out after 120s if not, sending the pod through a CrashLoop restart cycle.
+- `init-keycloak-users` (weight `10`) — bootstraps the Keycloak realm + a `ForwardAuth` service-account client. On rev 3 (and intermittently on prior runs) this fails with `Keycloak did not return a ForwardAuth service-account secret for client 'kamiwaza-svc'. Refusing to regenerate automatically until a transactional handoff is implemented.` That assertion lives at `kamiwaza/services/init-keycloak-users/main.py:1180-1183`.
+
+The failure mode: Helm `--wait` blocks the install from completing until the umbrella's Deployments are Ready. `core-scheduler` is never Ready because its init container is waiting for `core-db-init`. `core-db-init` is a post-install hook that only fires after Helm install completes successfully. Result: helm install sits in `pending-install`, then eventually times out at 20 min; the install is marked `failed`; `core-db-init` never runs; the scheduler never becomes Ready.
+
+Rev 2 worked through this implicitly because its cluster had been bootstrapped successfully at some prior point (when keycloak's realm state was clean and the hook chain completed). Rev 3 hit it on a true fresh install because:
+- The `make clean` step destroys the cluster but the Helm release uninstall + reinstall on the *same* persistent volumes leaves Keycloak's postgres database with stale realm state.
+- That stale state causes the `init-keycloak-users` re-run to fail the ForwardAuth assertion rather than re-create the missing secret.
+
+Workaround paths (none applied during rev 3 due to time):
+1. `make clean` + start fresh with no surviving PVCs, then bootstrap once. Probably "the right answer" for any team retest.
+2. Skip Helm hooks entirely (`--no-hooks`), then manually `helm template` + `kubectl apply` the `core-db-init` Job, then let scheduler converge.
+3. Patch the assertion in `init-keycloak-users/main.py` to regenerate the secret automatically when missing (the comment says it's intentionally refusing "until a transactional handoff is implemented").
+
+### What the team retest needs to do
+
+To get a clean rev-4 number on this scenario:
+
+1. **Fresh cluster from scratch.** `make clean` (verify both kind cluster + persistent volumes are gone) then `./scripts/install-dev.sh --dev-full` against the current Ansible template (already has `maxPods: 1000`).
+2. **Resolve Blocker A** before the install starts — either ship the secret stub via Ansible or remove the `credentialsSecretRef` from `overrides.yaml` for local-dev.
+3. **Validate the kubelet ceiling actually landed**: `kubectl get node -o jsonpath='{.items[0].status.allocatable.pods}'` must report `1k`, not `110`.
+4. **Wait for kamiwaza release status `deployed`** (not `pending-install` or `failed`) before doing anything else.
+5. **Install workroom-manager extension** via the UI install flow (or the stress-tester's `install_extension` scenario), and verify its Deployment image tag is resolvable on GHCR — see Finding #3.
+6. **Run the 20-bot stress** with `kamiwaza_url=https://hpe-demo-0130.westus2.cloudapp.azure.com`, `concurrent_users=20`, `scenarios=[workroom_kaizen_ctx]`, `skip_user_provisioning=true`, `kamiwaza_admin_user=admin`, `kamiwaza_admin_password=<from kamiwaza-user-admin secret>`. Don't run rev-4 against the cached `:develop` extension images — either pin every extension to `:release-0.13.1` once those tags are published (Finding #3) or document which extension version was actually live.
+
 ## Suggested next test
 
-Once shared Milvus + shared Graphiti are designed in, re-run this same 20-bot scenario to validate the architectural fix. The headline metric would be: how many of 20 bots reach the Kaizen UI within their 30-min timeout? **Target: ≥18/20 (allow for transient flakes), with no 401 storm, ≤30 FailedScheduling events total, no ImagePullBackOff, and the frontend `/workrooms` route returning within 5s under 20-session concurrency.**
+Once shared Milvus + shared Graphiti are designed in, re-run this same 20-bot scenario to validate the architectural fix. The headline metric would be: how many of 20 bots reach the Kaizen UI within their 30-min timeout? **Target: ≥18/20 (allow for transient flakes), with no 401 storm, ≤30 FailedScheduling events total, no ImagePullBackOff, and the frontend `/workrooms` route returning within 5s under 20-session concurrency.** This run can only validate the *architectural* fix after the test is first re-run on a `maxPods=1000` cluster to establish the corrected baseline (see "What rev 3 did not finish").
 
 ## Caveats on this report
 

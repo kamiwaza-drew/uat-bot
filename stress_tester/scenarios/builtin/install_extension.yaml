@@ -1,0 +1,141 @@
+name: install_extension
+description: Drive the App Garden UI to find the workroom-manager surface and discover its URL, OR install missing extensions from the catalog cards below.
+timeout: 180
+required_role: admin
+tags: [admin, install, recovery]
+
+steps:
+  - action: navigate
+    url: /apps
+    wait_for: networkidle
+
+  - action: sleep
+    timeout: 4
+
+  - action: screenshot
+    screenshot_name: 01_app_garden_landing
+
+  # Dismiss the welcome tour modal so we can interact with the page
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button, a'));
+        const skip = btns.find(b => (b.textContent || '').trim().toLowerCase() === 'skip tour' || (b.textContent || '').trim().toLowerCase().includes('skip'));
+        if (skip) { skip.click(); return 'OK: dismissed tour via Skip'; }
+        // Try X close button
+        const close = document.querySelector('[role="dialog"] button[aria-label*="close" i]');
+        if (close) { close.click(); return 'OK: closed via aria-label'; }
+        return 'WARN: no tour modal found (maybe already dismissed)';
+      })()
+    timeout: 5
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: 02_tour_dismissed
+
+  # Scroll down to the "Available Applications" section
+  - action: js_eval
+    value: |
+      (async () => {
+        const all = Array.from(document.querySelectorAll('*'));
+        const avail = all.find(el => (el.textContent || '').trim() === 'Available Applications');
+        if (avail) avail.scrollIntoView({block: 'start', behavior: 'instant'});
+        await new Promise(r => setTimeout(r, 1000));
+        return 'OK: scrolled to Available Applications. y=' + window.scrollY;
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: 03_available_apps
+
+  # Find workroom-manager card, click ITS Deploy button (not the card body).
+  # Walk up only 4 levels max to avoid matching a shared grid container that holds all 3 cards.
+  - action: js_eval
+    value: |
+      (async () => {
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        const deployButtons = allButtons.filter(b => (b.textContent || '').trim().toLowerCase() === 'deploy');
+        if (deployButtons.length === 0) return 'ERROR: no Deploy buttons on /apps page';
+        // For each Deploy button, look at the IMMEDIATE card subtree (max 4 ancestors up)
+        // and find the one whose card text contains workroom-manager (NOT skills-library or kaizen).
+        const candidates = deployButtons.map(btn => {
+          let cur = btn;
+          let cardText = '';
+          for (let i = 0; i < 4 && cur && cur !== document.body; i++) {
+            cur = cur.parentElement;
+            if (cur) cardText = (cur.textContent || '').toLowerCase();
+          }
+          return { btn, cardText };
+        });
+        // Match only workroom-manager (exclude skills, kaizen)
+        const target = candidates.find(c =>
+          (c.cardText.includes('workroom manager') || c.cardText.includes('workroom-manager')) &&
+          !c.cardText.includes('skills library') &&
+          !c.cardText.includes('skills-library') &&
+          !c.cardText.includes('kaizen')
+        );
+        if (!target) {
+          return 'ERROR: no Deploy button uniquely matches workroom-manager. Cards: [' +
+            candidates.map(c => c.cardText.substring(0, 60)).join(' | ') + ']';
+        }
+        target.btn.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+        target.btn.click();
+        return 'OK: clicked Deploy on workroom-manager card (card text: "' + target.cardText.substring(0,80) + '")';
+      })()
+    timeout: 15
+
+  - action: sleep
+    timeout: 4
+
+  - action: screenshot
+    screenshot_name: 04_deploy_modal
+
+  # Click Deploy in the modal
+  - action: js_eval
+    value: |
+      (async () => {
+        const dialog = document.querySelector('[role="dialog"]') || document.querySelector('.MuiDialog-root') || document;
+        const btns = Array.from(dialog.querySelectorAll('button'));
+        const deploy = btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t === 'deploy' || t === 'install' || t === 'deploy application' || t === 'add' || t.includes('deploy');
+        });
+        if (!deploy) {
+          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 40)).filter(Boolean);
+          return 'ERROR: deploy button not found. Dialog buttons: [' + labels.join(' | ') + ']';
+        }
+        if (deploy.disabled) {
+          return 'WARN: deploy disabled — form may need fields filled';
+        }
+        deploy.click();
+        return 'OK: clicked "' + deploy.textContent.trim() + '"';
+      })()
+    timeout: 15
+
+  - action: sleep
+    timeout: 15
+
+  - action: screenshot
+    screenshot_name: 05_after_deploy
+
+  # Verify via API
+  - action: js_eval
+    value: |
+      (async () => {
+        const res = await fetch('/api/extensions', { credentials: 'include' });
+        if (!res.ok) return 'ERROR: GET /api/extensions = ' + res.status;
+        const body = await res.json();
+        const list = Array.isArray(body) ? body : (body.items || body.extensions || []);
+        const wm = list.filter(e => (((e.name || '') + ' ' + (e.template_name || '')).toLowerCase()).includes('workroom-manager'));
+        return 'extensions count=' + list.length + ' workroom-manager matches=' + wm.length + (wm.length ? ' first=' + JSON.stringify(wm[0]).substring(0, 200) : '');
+      })()
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: 99_final

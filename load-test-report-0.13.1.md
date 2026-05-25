@@ -1,6 +1,6 @@
 # Load Test Report — Kamiwaza 0.13.1 vs 0.13.0 Workroom-Launched Kaizen Flow
 
-**Date:** 2026-05-25 (rev 4.2 — milvus `:2.3.0` GHCR fix landed; 50-bot retest isolates the remaining bug to forwardauth/session-cookie persistence)
+**Date:** 2026-05-25 (rev 4.5 — milvus fix + UI-installed wm + distinct users per bot; first clean test where workers reached Kaizen UI)
 **Target build under test:** Kamiwaza `release/0.13.1` across **every repo with a `release/0.13.1` branch** (rev 1 only pinned `core` + `frontend`).
 **Comparison baseline:** Kamiwaza `release/0.13.0` (`:develop` core image at the time)
 **Host:** `kamiwaza-dev-control-plane` — single-node kind+podman cluster on `hpe-demo-0130.westus2.cloudapp.azure.com`
@@ -128,7 +128,98 @@ Run `9c84e726ea5a4951b612c26a828c72e3`, started 2026-05-25T05:35:25Z, T+~8min be
 
 This is the apples-to-apples retest the prior revs needed. **The architectural-ceiling framing is debunked.** Real failure modes remaining for 0.13.1 are (a) the marketplace milvus image tag mismatch and (b) a smaller-magnitude session-persistence-under-concurrent-login flake.
 
-## 50-bot rev-4.2 result (milvus `:2.3.0` GHCR fix in place)
+## 50-bot rev-4.5 result (clean cluster, UI-installed wm, distinct users — first run to reach Kaizen UI)
+
+Run `a24213f2ebba4fc9ace81f4a20ff1dfa`, started 2026-05-25 18:11Z, T+~14min cancelled (steady-state plateau established).
+
+**Setup delta vs rev 4.2:**
+- Workroom-manager **reinstalled via the UI** (App Garden Deploy flow done by hand) instead of via manual `kubectl apply`. Critical: the operator's full reconcile path sets the right `KAMIWAZA_PUBLIC_API_URL` + `KAMIWAZA_ORIGIN` env vars based on current `global.domain`, so kaizen URLs now point at `hpe-demo-0130.westus2.cloudapp.azure.com`, not the leftover `kamiwaza.test` from the early bad install.
+- Cleared all 37 leftover workroom records from the wm-backend DB via API (the K8s cleanup in prior revs only deleted KX CRs, not the wm-backend's own DB rows).
+- Stress-tester run with `skip_user_provisioning=false` (the default) → **50 distinct users provisioned**, not 50 sessions for one admin. Confirmed this matters: rev-4.2 had 32-40 session-drops at /workrooms; rev-4.5 had **1**.
+
+### Stage progression
+
+| Stage | Bots reaching it |
+|---|---:|
+| Login + navigate to /workrooms | **49/50** ✓ |
+| Workroom created via wizard | 49/50 |
+| Deploy POST returned + Kaizen pods scheduled | 49/50 |
+| Kaizen URL became routable (Phase 3 success) | **20/50** |
+| **Kaizen UI actually loaded** (`07_kaizen_ui_loaded` screenshot) | **20/50** ✓ — **first time ever** |
+| Kaizen chat composer rendered | 0/50 (new failure mode — see Finding #10) |
+| Conversation 1–3 (the actual context-manager stress) | 0/50 (gated on composer) |
+
+### Per-worker outcome (50/50 observed)
+
+| Count | Outcome | Notes |
+|---:|---|---|
+| **20** | Reached `07_kaizen_ui_loaded` then errored at "composer not found after 150s" | Kaizen frontend pod rendered initial HTML, but the chat composer element never appeared in DOM within 150s. New failure mode, surfaced because we finally got bots past Phase 3. Could be Kaizen hydration timing under concurrent load, or a selector drift between Kaizen 1.8.13 and the scenario's selector. |
+| **15** | Reached `06_deploy_started`, still in Phase 3 URL polling when cancelled | Many of these would have reached UI given more time — the polling was succeeding for some bots, just slower than the cancel window. |
+| 7 | `enter failed: 401 body={"detail":"no access token found"}` on POST `/api/workrooms/{id}/enter` | Auth-gateway rejecting the enter call. Workers had a valid session for the deploy POST but the enter call's auth header missing/stripped. |
+| 4 | `enter failed: 401 body={"detail":"not authenticated"}` | Same as above, different error message — same root cause. |
+| 3 | Reached `03_workroom_created`, then mid-Phase 2 (deploy POST) | Likely fell into the listing-API stale-read race, no error logged before cancel. |
+| **1** | Session dropped at /workrooms landing | Down from 40/50 in rev 4.1 and 32/50 in rev 4.2. **Confirms the rev-4.2 high session-drop rate was an artifact of all 50 bots sharing one admin user**, not a real platform concurrency bug. With 50 distinct users, the rate is 2%. |
+
+### Cluster behavior — first time we saw scheduler backpressure on the corrected cluster
+
+| Time | Total | Running | Pending | ext-pods |
+|---:|---:|---:|---:|---:|
+| pre-test | ~40 | 35 | 0 | 2 |
+| T+25s | ~48 | 36 | 0 | 12 |
+| T+55s | ~62 | 53 | 4 | 30 |
+| T+83s | ~80 | 69 | 9 | 53 |
+| T+108s | ~98 | 85 | 0 | 63 |
+| T+133s | ~108 | 97 | 9 | 87 |
+| T+159s | ~134 | 120 | 14 | 121 |
+| T+184s | ~149 | 133 | 16 | 138 |
+| T+210s | ~159 | 148 | 5 | 146 |
+| T+261s | ~178 | 172 | 5 | 170 |
+| T+313s | ~196 | 192 | 4 | 182 |
+| T+414s | ~215 | 213 | 1 | 205 |
+| T+518s | ~261 | 257 | 2 | 256 |
+| T+595s | ~327 | **259** | 60 | 287 |
+| T+646s | ~373 | **259** | 106 | 346 |
+| T+774s | ~418 | **259** | 151 | 389 |
+| T+826s | ~452 | **259** | 186 | 416 |
+| T+851s | ~472 | **259** | 205 | 435 |
+
+**Hard plateau at 259 Running with up to 205 Pending pods (steady-state extension-namespace count: 435).** This is the **first time we've seen scheduler backpressure on the corrected cluster** — 259 is well below the kubelet `maxPods=1000` ceiling, so the limit is *not* per-node pod cap this time. It's a kube-scheduler / etcd / API-server throughput plateau at this single-node cluster. Real architectural finding, distinct from the stale-maxPods bug.
+
+### Headline reframe (cumulative across the rev-4.x series)
+
+| Concern | Rev 1/2 framing | Reality after rev 4.5 |
+|---|---|---|
+| Cluster ceiling | "wedges at 100 pods" | 259 sustained, 435+ ext-pods total. The 100 was the stale maxPods bug. |
+| Auth-gateway 401 burst | "concurrent admin sessions break forwardauth" | Mostly an artifact of 50 sessions for 1 admin. With 50 distinct users: 11/50 enter-401s (down from 15/20 in rev 1) — real but smaller. |
+| `Page.goto` timeout on /workrooms | "frontend can't render under load" | Was the stale-config artifact (mix of maxPods + wm misroute). Down to 1/50 with clean setup. |
+| Per-workroom pod cost | "11 pods, only fits 7 on a 110-pod node" | 11 pods is still true. With 50 workrooms × ~11 = 550 pods + system, fits comfortably under the 1000 cap. But scheduler throughput plateaus at ~50 workrooms anyway. |
+| Real production blocker | "forwardauth singleton choke point" | Now isolated to: (a) **scheduler/etcd plateau at ~50 concurrent workrooms** on a single-node cluster, (b) **Kaizen frontend hydration** (composer never appears for the workers that reach UI), (c) **smaller-magnitude enter-401** auth path issue. |
+
+### Finding #10 (new in rev 4.5) — Kaizen chat composer never renders for 100% of workers that reach UI
+
+20/20 workers that successfully loaded `07_kaizen_ui_loaded` then failed waiting for the chat composer element. The Kaizen frontend container is 1/1 Running, returned HTML over the network, but the composer (textarea / message-input DOM element) never appeared within 150s.
+
+Hypotheses:
+- Kaizen frontend hydration is slow because all 20 frontend pods are competing for ray-head (or kaizen-backend) API resources at once
+- Kaizen backend → context-service → milvus chain takes long enough that the frontend shows a loading spinner past 150s
+- Selector drift: scenario looks for `textarea[placeholder*="message"]` (or similar) and Kaizen 1.8.13 changed the DOM
+- React app bundle is large and the browser-side JS takes time
+
+This is the first failure mode we can attribute squarely to Kaizen-the-extension as opposed to platform infrastructure. Suggested next step: scenario adds a `screenshot 07a_kaizen_loading` 10s after `07_kaizen_ui_loaded`, then 30s, 60s, 120s to see what's actually on screen during the wait. Or have a real human open one of these workrooms manually and see how long the composer takes to render.
+
+### Finding #11 (new in rev 4.5) — Scheduler/etcd throughput plateau at ~50 concurrent workrooms
+
+Cluster plateaued at exactly 259 Running pods despite maxPods=1000 and only 50 bots driving load. Pending grew to 205 with ContainerCreating stuck at ~8. This is the second-order capacity ceiling — once you're past the per-node-pod-cap conversation, the next limit is how many pod create/start operations kube-scheduler + kubelet + containerd can process in parallel on a single-node cluster.
+
+Worth checking before any architectural decisions:
+- kube-scheduler logs for queueing delays
+- etcd write latency under load (single-node etcd can be a bottleneck even though we have 3 replicas — they all serialize through the leader)
+- containerd's `cri.containerd.max_concurrent_downloads` and image-pull pool size
+- kubelet's `--registry-pull-qps` and `--registry-burst`
+
+This finding is genuinely architectural in a way the prior framings weren't. It would still bite a multi-tenant deployment regardless of how the auth and workroom-manager layers behave.
+
+## 50-bot rev-4.2 result (milvus `:2.3.0` GHCR fix in place) — superseded by 4.5
 
 Run `381d6094d25148bb9ac519015f05d782`, started 2026-05-25 15:53Z, T+~11min cancelled (steady state established; workers stuck in Phase 3 polling were on the 10-min URL-routability timeout).
 

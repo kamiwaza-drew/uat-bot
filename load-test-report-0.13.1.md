@@ -15,6 +15,7 @@
 - `make clean` + `./scripts/install-dev.sh --dev-full` against the current Ansible template → kubelet reports **`allocatable_pods=1000`**.
 - 20-bot `login` stress: **20/20 PASSED, 0 failures**, cluster steady at 32 Running pods. (Rev 1/2's frontend-render-under-load failures did not reproduce on the corrected cluster.)
 - 20-bot `workroom_kaizen_ctx` stress: cluster scaled to **151 Running pods at peak** with 0 Pending. **Past the prior 100-pod wedge by 50%+ with headroom to spare.** The "no concurrency budget anywhere in the platform" framing from rev 1/2 was largely an artifact of the kubelet cap.
+- 50-bot `workroom_kaizen_ctx` stress (added in rev 4.1): cluster scaled to **99 Running at peak with 0 Pending**, no scheduler backpressure, but **40 of 50 workers (80%) hit the session-persistence-under-concurrent-login bug** — they landed on the Login page after authenticating successfully, with no "Create workroom" control present. This is the *real* concurrency ceiling on 0.13.1 — it's in the auth-gateway / session-store layer, not the scheduler. See "50-bot result" section.
 
 So all of the rev-1 / rev-2 framing about "architectural ceiling at the kubelet pod cap" applied to the wrong cap, and "the platform has no backpressure regardless of release" overstated the case — the platform handled 20 concurrent workrooms (~133 pods) without wedging once the actual ceiling was 1000.
 
@@ -126,6 +127,52 @@ Run `9c84e726ea5a4951b612c26a828c72e3`, started 2026-05-25T05:35:25Z, T+~8min be
 
 This is the apples-to-apples retest the prior revs needed. **The architectural-ceiling framing is debunked.** Real failure modes remaining for 0.13.1 are (a) the marketplace milvus image tag mismatch and (b) a smaller-magnitude session-persistence-under-concurrent-login flake.
 
+## 50-bot result on rev-4.1 cluster (same maxPods=1000 + 0.13.1)
+
+Run `c3271c9bdb0442d79bc2f2aa694acd22`, started 2026-05-25 06:54Z, T+~8min cancelled (steady-state established). 50 concurrent admin bots, same `workroom_kaizen_ctx` scenario, 60s ramp-up. Cluster pre-test at clean baseline (38 total pods, 2 ext pods = just workroom-manager).
+
+| Stage | Bots reaching it |
+|---|---:|
+| Login + navigate to /workrooms (Create-workroom button present) | 10 / 50 |
+| Workroom created via wizard | 10 / 50 |
+| Deploy POST returned + Kaizen pods scheduled | 8 / 50 |
+| Kaizen UI actually loaded | 0 / 50 (blocked on Finding #2 — milvus `:2.3.0`) |
+
+### Per-worker outcome breakdown
+
+| Count | Outcome | Notes |
+|---:|---|---|
+| **40** | Session dropped — landed on Login page after auth; "Create workroom" button absent, only "Login" control visible | Same class as rev-2's `Page.goto` and rev-1's 401-burst, but at much larger magnitude. **The dominant 50-bot failure mode.** This is *not* a pod-budget issue — the workers got HTTP 200 on the workrooms page; the page just didn't have an authenticated layout. Likely the auth-gateway / session-store can't keep up with 50 concurrent admin sessions establishing in a 60s ramp window. |
+| 8 | Reached `06_deploy_started`, then stuck waiting on milvus `:2.3.0` ImagePullBackOff | Same as rev-4 — pure extension-bug blocker, not load. |
+| 2 | Past deploy POST but `workroom_id not found by name` in listing API | Same as rev-2 + rev-4. |
+
+### Cluster behavior at 50 bots — still no wedge
+
+| Time | Total | Running | Pending | ext-pods |
+|---:|---:|---:|---:|---:|
+| pre-test | ~40 | 34 | 0 | 2 |
+| T+25s | ~46 | 40 | 1 | 11 |
+| T+76s | ~71 | 56 | 11 | 38 |
+| T+101s | ~71 | 64 | 0 | 38 |
+| T+127s | ~83 | 74 | 2 | 47 |
+| T+152s | ~89 | 82 | 0 | 56 |
+| T+177s | ~99 | 90 | 2 | 65 |
+| T+228s | ~98 | 91 | 0 | 65 |
+| T+253s | ~106 | **98** | 0 | 74 |
+| T+278s | ~107 | **99** | 0 | 74 |
+| T+481s | ~107 | **99** (steady) | 0 | 74 |
+
+**Peak cluster utilization on 50 bots was lower than on 20 bots** (99 vs 151 Running) because most of the workers were dying at the auth layer before they could spawn workroom pods. The scheduler had no backpressure — 0 Pending throughout. **At 50 concurrent admins, the platform's load ceiling is in the auth/session layer, not the kubelet.**
+
+### Headline reframe at 50 bots
+
+The "scheduler wedge" theory of platform unscalability is now fully dead. The real bottleneck on 0.13.1 is concurrent-admin-session establishment in the auth-gateway/Keycloak path. Specifically:
+
+- 20 concurrent admins → 5/20 (25%) lose session
+- 50 concurrent admins → 40/50 (80%) lose session
+
+This pattern is the actual blocker for any sales-demo / QA-team-of-5+ scenario. It is independent of the maxPods bug and independent of the per-workroom pod cost story.
+
 ## Prior result: 20-bot stress run on rev-2 (kept for comparison)
 
 The rev-2 run below is now known to have been on a maxPods=110 cluster — the headline failures (Page.goto, auth-gateway 401) were partly amplified by scheduler-saturation. Kept here as historical reference.
@@ -204,9 +251,22 @@ Two pipeline fixes worth considering:
 - The frontend's data-fetch on `/workrooms` cascades through `/workrooms/api/deployments` + `/api/workrooms` + `/api/extensions` and any one of those degrades under load
 - Traefik forwardauth middleware (`core-forwardauth`) serializes requests behind a single keycloak round-trip
 
-### Finding #5 — Auth-gateway `401 Not Authenticated` under burst load (new in rev 1, did not reappear in rev 2 but pattern stands)
+### Finding #5 — Auth-gateway / session-store concurrency ceiling (now the dominant rev-4.1 finding)
 
-15 of 20 workers in rev 1 hit `401 Not Authenticated` on `POST /api/workrooms/{id}/enter` with valid session cookies that had already authenticated successfully on earlier calls in the same run. Did not appear in rev 2 because rev 2's workers died earlier (at Page.goto, before reaching `/enter`). Both failures are downstream of the same root cause: the platform has no concurrency budget and serializes/drops valid traffic. The 0.13.0 report's recommendation to add per-user quota stands.
+This was the rev-1 401-burst, rev-2 Page.goto timeouts, and is now confirmed at 50-bot scale as the *real* platform ceiling. Per the 50-bot run:
+
+- **20 bots** → 5/20 (25%) lose session before reaching /workrooms
+- **50 bots** → **40/50 (80%) lose session** before reaching /workrooms
+
+These are the SAME concurrent-admin-session establishment failure surfacing in different ways depending on where the bot happens to be when its session drops. The root cause is somewhere in: keycloak token validation throughput, auth-gateway session caching, the forwardauth middleware's keycloak round-trip, or session-store concurrent-write contention.
+
+This is the actual production-blocker for multi-user demos / QA-team scenarios. The 0.13.0 report's per-user quota recommendation addresses a different concern (workroom-creation rate) and would not fix this — the issue is at the *session establishment* layer, before any workroom-creation API is even called.
+
+**Suggested investigation path:**
+- Run `kubectl logs -f -n kamiwaza deployment/keycloak` during a 50-bot run; look for connection-pool exhaustion or auth flow errors
+- Check forwardauth middleware (kamiwaza-core) for in-flight-request limits or serialization
+- Profile the actual /workrooms render path for sessions that appear logged-out — what specifically is rejecting them?
+- Rev-4.1 stress run artifacts at `data/runs/c3271c9bdb0442d79bc2f2aa694acd22/events.jsonl` have per-worker timing for correlation against keycloak/auth logs
 
 ### Finding #6 — Graphiti CrashLoop pattern from 0.13.0 is resolved on 0.13.1
 

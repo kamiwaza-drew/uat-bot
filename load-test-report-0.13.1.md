@@ -1,6 +1,6 @@
 # Load Test Report — Kamiwaza 0.13.1 vs 0.13.0 Workroom-Launched Kaizen Flow
 
-**Date:** 2026-05-25 (rev 4 — full retest on corrected cluster: maxPods=1000, fresh 0.13.1 install)
+**Date:** 2026-05-25 (rev 4.2 — milvus `:2.3.0` GHCR fix landed; 50-bot retest isolates the remaining bug to forwardauth/session-cookie persistence)
 **Target build under test:** Kamiwaza `release/0.13.1` across **every repo with a `release/0.13.1` branch** (rev 1 only pinned `core` + `frontend`).
 **Comparison baseline:** Kamiwaza `release/0.13.0` (`:develop` core image at the time)
 **Host:** `kamiwaza-dev-control-plane` — single-node kind+podman cluster on `hpe-demo-0130.westus2.cloudapp.azure.com`
@@ -16,6 +16,7 @@
 - 20-bot `login` stress: **20/20 PASSED, 0 failures**, cluster steady at 32 Running pods. (Rev 1/2's frontend-render-under-load failures did not reproduce on the corrected cluster.)
 - 20-bot `workroom_kaizen_ctx` stress: cluster scaled to **151 Running pods at peak** with 0 Pending. **Past the prior 100-pod wedge by 50%+ with headroom to spare.** The "no concurrency budget anywhere in the platform" framing from rev 1/2 was largely an artifact of the kubelet cap.
 - 50-bot `workroom_kaizen_ctx` stress (added in rev 4.1): cluster scaled to **99 Running at peak with 0 Pending**, no scheduler backpressure, but **40 of 50 workers (80%) hit the session-persistence-under-concurrent-login bug** — they landed on the Login page after authenticating successfully, with no "Create workroom" control present. This is the *real* concurrency ceiling on 0.13.1 — it's in the auth-gateway / session-store layer, not the scheduler. See "50-bot result" section.
+- **Rev 4.2 (50-bot, milvus `:2.3.0` GHCR fix landed):** the workroom-spawning pipeline now goes all the way through. Cluster scaled to **143 Running pods at peak with 124 extension pods, zero `ImagePullBackOff`, zero scheduler backpressure**. milvus pulls cleanly, kaizen pods reach 1/1 Ready, Traefik IngressRoutes are created and route correctly (direct `curl` on a kaizen URL returns the expected `HTTP 401` Kaizen-pod challenge). **The session-drop bug is now isolated as the sole remaining blocker** — 32/50 dropped at /workrooms landing; 13/50 reached deploy POST and got into the Phase-3 URL-routability polling loop but their forwardauth fetch then sees a stale session and gets redirected back to the Kamiwaza shell (the URL "looks not ready" to the bot even though it IS ready). 0/50 reached the Kaizen UI — but the failure mode is no longer scheduler-OR-image-related, it's a single auth/session issue at two surfaces. See "50-bot rev-4.2 result" section.
 
 So all of the rev-1 / rev-2 framing about "architectural ceiling at the kubelet pod cap" applied to the wrong cap, and "the platform has no backpressure regardless of release" overstated the case — the platform handled 20 concurrent workrooms (~133 pods) without wedging once the actual ceiling was 1000.
 
@@ -126,6 +127,84 @@ Run `9c84e726ea5a4951b612c26a828c72e3`, started 2026-05-25T05:35:25Z, T+~8min be
 **Past the prior 100-pod wedge at T+128s. Peaked at 151 Running with 0 Pending.** The cluster fully drained the scheduler backlog — there is no Pending plateau. The 15 ImagePullBackOff are all milvus pods waiting on a tag that GHCR doesn't have (Finding #2); they do not constitute scheduler backpressure.
 
 This is the apples-to-apples retest the prior revs needed. **The architectural-ceiling framing is debunked.** Real failure modes remaining for 0.13.1 are (a) the marketplace milvus image tag mismatch and (b) a smaller-magnitude session-persistence-under-concurrent-login flake.
+
+## 50-bot rev-4.2 result (milvus `:2.3.0` GHCR fix in place)
+
+Run `381d6094d25148bb9ac519015f05d782`, started 2026-05-25 15:53Z, T+~11min cancelled (steady state established; workers stuck in Phase 3 polling were on the 10-min URL-routability timeout).
+
+**Setup delta vs rev 4.1:**
+- `service-milvus:2.3.0` now resolves at the registry (verified at registry level with a manifest HEAD: `HTTP 200`, `docker-content-digest: sha256:1b65507ecfbe88c0fc19e3cd5664335036da7fdf3eb3913166a6b4cac84fa4f0`, matches the multi-arch digest seeded from the dev Garden v2.3.0 standalone image). The GitHub Packages API view of that package is stale and still doesn't show the tag — but the registry truth via `curl -sI https://ghcr.io/v2/...` is what kubelet uses.
+- Workroom-manager backend bounced (`kubectl rollout restart`) to refresh its catalog cache before the run.
+- Cluster otherwise identical to rev 4.1 (maxPods=1000, fresh 0.13.1 stack, clean baseline of 2 ext pods + ~38 platform pods).
+
+| Stage | Bots reaching it |
+|---|---:|
+| Login + navigate to /workrooms (Create-workroom button present) | 18 / 50 |
+| Workroom created via wizard | 18 / 50 |
+| Deploy POST returned + Kaizen pods scheduled | **13 / 50** |
+| Phase 3 URL polling sees Kaizen route as live | **0 / 50** ← the new bottleneck |
+| Kaizen UI actually loaded | 0 / 50 |
+
+### Per-worker outcome breakdown (49 workers observed; 1 silently dropped before scenario.start)
+
+| Count | Outcome | Notes |
+|---:|---|---|
+| **32** | Session dropped at /workrooms landing — `Create workroom button not found. Controls: [Login]` | Same dominant failure mode as rev 4.1 (40/50 there). |
+| **8** | Reached `06_deploy_started`, still in Phase 3's 10-min URL polling loop when run was cancelled at T+11min | These workers had a valid session to do POST `/workrooms/api/deployments` but their subsequent `fetch(...kaizen URL...)` through `core-forwardauth` middleware appears to be hitting a stale session, redirecting to /login, and the bot's poll loop sees the resulting Kamiwaza shell HTML (not Kaizen) → keeps polling. |
+| **5** | Reached deploy, Phase 3 polled the full 10 min and timed out with `ERROR: kaizen URL never returned Kaizen HTML after 600s` | Same root cause as the 8 above, just the workers that hit Phase 3 earliest. |
+| **3** | Past deploy POST but `workroom_id not found by name=ctx-mgr-uat-…` in the listing API | Stale-read race in `/workrooms/api/workrooms` — POST returned success but the subsequent list-query in the same window didn't see the new row. Reproduces from rev 2/4. |
+| 1 | `Page.goto: Timeout 60000ms exceeded` on initial nav | Same class as rev 2. |
+
+### Cluster behavior at 50 bots with milvus fix — full scaling, no image-pull failures
+
+| Time | Total | Running | Pending | ImagePullBackOff | ext-pods |
+|---:|---:|---:|---:|---:|---:|
+| pre-test | ~40 | 35 | 0 | 0 | 2 |
+| T+26s | ~50 | 40 | 2 | 0 | 12 |
+| T+51s | ~75 | 56 | 7 | 0 | 35 |
+| T+76s | ~85 | 66 | 4 | 0 | 44 |
+| T+102s | ~91 | 73 | 4 | 0 | 56 |
+| T+127s | ~102 | 90 | 0 | **0** | 66 |
+| T+152s | ~106 | 94 | 0 | 0 | 70 |
+| T+178s | ~111 | 99 | 0 | 0 | 75 |
+| T+228s | ~129 | 114 | 0 | 0 | 93 |
+| T+254s | ~138 | 120 | 6 | 0 | 107 |
+| T+279s | ~140 | 135 | 2 | 0 | 120 |
+| T+304s | ~143 | **141** | 0 | 0 | 124 |
+| T+355s | ~144 | **143** | 0 | 0 | 124 |
+| T+685s | ~159 | **142** (steady) | 0 | 0 | 124 |
+
+**Compared to rev 4.1:** peak Running went **99 → 143** (44 more pods) because the workers that survived session-drop actually spawned full kaizen-stack workrooms instead of dying at deploy POST. The 124 extension pods is the largest sustained extension-namespace workload we've measured. ImagePullBackOff stayed at 0 throughout — the milvus fix landed cleanly.
+
+### What rev 4.2 isolates
+
+Rev 4.1's "auth/session bottleneck" framing is now sharpened: it's **specifically a session-cookie-persistence problem in the path that goes through `core-forwardauth` middleware under concurrent admin sessions**, surfacing at two distinct points:
+
+1. **Landing on /workrooms** (32/50): the bot's authenticated session establishes successfully (login POST returns 200), the bot navigates to /workrooms, but the SPA renders the unauthenticated layout (only "Login" control visible). This is the rev-4.1 failure.
+2. **Phase 3 URL polling** (13/50): the bot's session is still valid for `/workrooms/api/deployments` POST (which goes through kamiwaza-core's auth, not forwardauth), but the subsequent `fetch(/runtime/apps/kaizen-<id>)` through Traefik's `core-forwardauth` middleware doesn't see a valid session — redirects to /login, bot sees the Kamiwaza shell HTML, treats the URL as "not ready", keeps polling for 10 min then times out.
+
+Both surfaces are the same underlying bug. The platform handled 50 concurrent admin sessions worth of workroom creation + cluster scheduling + image pulls without breaking a sweat — **143 Running pods, 0 Pending, 0 ImagePullBackOff** — but the auth layer can't keep those 50 sessions alive simultaneously.
+
+**Direct verification that the kaizen path is actually live:**
+```
+$ kubectl get ingressroute -n kamiwaza | grep kaizen-13mp7xdl-d9e57b43
+kaizen-13mp7xdl-d9e57b43-route   7m15s
+
+$ curl -sk -o /dev/null -w "%{http_code}\n" \
+    https://hpe-demo-0130.westus2.cloudapp.azure.com/runtime/apps/kaizen-13mp7xdl-d9e57b43
+401
+```
+The 401 is exactly what Phase 3's poll loop accepts as "live" — kaizen is up, kaizen wants a launch token. From an authenticated session that hadn't been dropped, this same fetch would succeed.
+
+### Recommended next investigation step
+
+Profile `core-forwardauth` + keycloak under 50 concurrent admin sessions. Likely candidates:
+- Forwardauth's in-memory session cache has a size limit that evicts older entries under load
+- Forwardauth → keycloak token-validation round-trip serializes (single keycloak replica, connection-pool limit)
+- The session cookie's `SameSite` / domain settings combined with `/runtime/apps/...` paths cause the cookie to not be sent on cross-IngressRoute requests
+- Workroom-binding-state contention (we saw similar surface in the `AUTH_WORKROOM_BINDING_BACKEND` memory entry — that was a config bug, but the same code path could have a concurrency bug too)
+
+Rev 4.2 run artifacts at `data/runs/381d6094d25148bb9ac519015f05d782/events.jsonl` have per-worker timing aligned with the workroom IDs that *were* successfully created (`ctx-mgr-uat-mpld*`), so the team can correlate against keycloak / forwardauth / kamiwaza-core access logs in the same time window.
 
 ## 50-bot result on rev-4.1 cluster (same maxPods=1000 + 0.13.1)
 

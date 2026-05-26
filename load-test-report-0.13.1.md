@@ -1,6 +1,24 @@
 # Load Test Report — Kamiwaza 0.13.1 vs 0.13.0 Workroom-Launched Kaizen Flow
 
-**Date:** 2026-05-25 (rev 4.5 — milvus fix + UI-installed wm + distinct users per bot; first clean test where workers reached Kaizen UI)
+**Date:** 2026-05-26 (rev 4.7 — agent-create scenario fixes land; **1-bot smoke ran Phase 5 long-context conversation end-to-end for the first time on 0.13.1**; 50-bot run separates three Kaizen-layer concurrency bottlenecks)
+
+## 🟢 What now works (proven end-to-end on 0.13.1)
+
+For the first time since this load-test campaign started, the bot successfully drove the full Kaizen conversation flow on a single-user session:
+
+1. Create workroom via the wizard ✓
+2. Deploy Kaizen extension to workroom ✓
+3. Wait for kaizen URL to become routable ✓
+4. Bind session via `/api/workrooms/{id}/enter` ✓
+5. Land on Kaizen "No agents yet" empty state ✓
+6. Walk all 5 steps of the agent-create wizard (Name + Model=gpt-5.4 → Continue → 4 more Continues) ✓
+7. Hover the new agent card to mount the gated Chat button → click → workspace provisions (~2-4 min) ✓
+8. Composer textarea appears in `/conversations/{id}` ✓
+9. **Phase 5 — long-context condensation**: send a 12KB message with a planted "activation code: 7-ZULU-MIKE-42" surrounded by 40 paragraphs of filler, get the LLM's READY ack, then send "what was the activation code at the start of this conversation?" and get the answer ✓
+
+This was the original `/uat-bot` request from session start (*"3 conversations testing the context manager"*) — Phase 5 is now real. Phase 6 (many-turn recall) and Phase 7 (tool-chain) have working scenarios but haven't been run end-to-end yet — the 50-bot run died at concurrency bottlenecks before any worker got there.
+
+Verified at single-bot scale via run `5ad26d352e3642aa8813aace71780a3e`. The 50-bot rev-4.7 run later in this report shows where this same flow breaks under concurrency.
 **Target build under test:** Kamiwaza `release/0.13.1` across **every repo with a `release/0.13.1` branch** (rev 1 only pinned `core` + `frontend`).
 **Comparison baseline:** Kamiwaza `release/0.13.0` (`:develop` core image at the time)
 **Host:** `kamiwaza-dev-control-plane` — single-node kind+podman cluster on `hpe-demo-0130.westus2.cloudapp.azure.com`

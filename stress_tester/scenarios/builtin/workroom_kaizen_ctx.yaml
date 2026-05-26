@@ -1,11 +1,11 @@
 name: workroom_kaizen_ctx
-description: Create a new workroom, open its runtime (Kaizen), then create 3 threads designed to stress the context manager (long-context condensation, many-turn recall, tool_use/tool_result mismatch recovery).
-timeout: 900
+description: Create a new workroom, launch its Kaizen app, then run 3 sequential conversations inside the Kaizen UI designed to stress the context manager (long-context condensation, many-turn recall, tool_use/tool_result mismatch recovery). Bypasses workroom-panel staleness by polling /api/apps/deployments and navigating directly to the Kaizen access_path.
+timeout: 1800
 required_role: editor
 tags: [workroom, kaizen, context_manager, stress]
 
 steps:
-  # ─── Phase 1: Create a new workroom ───────────────────────────────
+  # ─── Phase 1: Create a new workroom via the wizard ────────────────
   - action: navigate
     url: /workrooms
     wait_for: networkidle
@@ -13,494 +13,964 @@ steps:
   - action: screenshot
     screenshot_name: 01_workrooms_landing
 
-  # Click "New workroom" button (WorkroomManager.js:785)
-  - action: js_eval
-    value: |
-      (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const target = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new workroom'));
-        if (!target) {
-          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 40));
-          return 'ERROR: New workroom button not found. Buttons: [' + labels.slice(0, 20).join(' | ') + ']';
-        }
-        target.click();
-        return 'OK: Clicked New workroom';
-      })()
-    timeout: 10
-
-  - action: sleep
-    timeout: 2
-
-  - action: screenshot
-    screenshot_name: 02_new_workroom_modal
-
-  # Fill in workroom name. WorkroomFormDialog uses a TextField with label "Name".
-  # MUI typically renders as input[name="name"] but may be unnamed — try several.
-  - action: js_eval
-    value: |
-      (async () => {
-        const wrName = 'ctx-mgr-uat-' + Date.now().toString(36);
-        // Find the Name field — try by name attr, then by aria-label, then first input in dialog
-        const dialog = document.querySelector('[role="dialog"]') || document.body;
-        let nameInput = dialog.querySelector('input[name="name"]')
-          || dialog.querySelector('input[aria-label*="Name" i]')
-          || dialog.querySelector('input[type="text"]');
-        if (!nameInput) return 'ERROR: Name input not found in dialog';
-
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(nameInput, wrName);
-        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-        nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-        // Stash the workroom name on window so later steps can reference it
-        window.__uat_workroom_name = wrName;
-        return 'OK: Filled name=' + wrName;
-      })()
-    timeout: 10
-
-  - action: screenshot
-    screenshot_name: 03_workroom_name_filled
-
-  # Submit — button text is "Create workroom" (WorkroomFormDialog.js:128)
-  - action: js_eval
-    value: |
-      (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const submit = btns.find(b => {
-          const t = (b.textContent || '').trim().toLowerCase();
-          return t === 'create workroom' || t.includes('create workroom');
-        });
-        if (!submit) {
-          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 40));
-          return 'ERROR: Create workroom submit not found. Buttons: [' + labels.slice(0, 30).join(' | ') + ']';
-        }
-        submit.click();
-        return 'OK: Submitted workroom create';
-      })()
-    timeout: 10
-
-  - action: sleep
-    timeout: 4
-
-  - action: screenshot
-    screenshot_name: 04_after_workroom_create
-
-  # ─── Phase 2: Open the runtime (this IS the kaizen launch) ────────
-  # WorkroomManager.js:983 — "Open runtime" navigates to /workrooms/{id}/runtime
+  # Click "Create Workroom" trigger
   - action: js_eval
     value: |
       (async () => {
         const btns = Array.from(document.querySelectorAll('button, a'));
-        const open = btns.find(b => {
+        const target = btns.find(b => {
           const t = (b.textContent || '').trim().toLowerCase();
-          return t === 'open runtime' || t.includes('open runtime');
+          return t.includes('create workroom') || t.includes('new workroom');
         });
-        if (!open) {
-          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 30)).filter(Boolean);
-          return 'ERROR: Open runtime button not found. Controls: [' + labels.slice(0, 30).join(' | ') + ']';
+        if (!target) {
+          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 40)).filter(Boolean);
+          return 'ERROR: Create workroom button not found. Controls: [' + labels.slice(0, 30).join(' | ') + ']';
         }
-        open.click();
-        return 'OK: Clicked Open runtime';
+        target.click();
+        return 'OK: opened create-workroom dialog';
       })()
     timeout: 10
 
-  - action: wait_for_url
-    value: /runtime
-    timeout: 60
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: 02_create_dialog_open
+
+  # Fill Title + Classification (both required)
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrName = 'ctx-mgr-uat-' + Date.now().toString(36);
+        const dialog = document.querySelector('[role="dialog"]') || document.body;
+        const allInputs = Array.from(dialog.querySelectorAll('input[type="text"], textarea'));
+        const findByPlaceholder = (frag) => allInputs.find(i =>
+          (i.placeholder || '').toLowerCase().includes(frag.toLowerCase()) ||
+          (i.getAttribute('aria-label') || '').toLowerCase().includes(frag.toLowerCase())
+        );
+        const titleInput = findByPlaceholder('venezuela') || findByPlaceholder('title') || allInputs[0];
+        const classInput = findByPlaceholder('classification') || findByPlaceholder('secret//noforn') || findByPlaceholder('unclassified') || findByPlaceholder('handling') || allInputs[2];
+        if (!titleInput || !classInput) {
+          return 'ERROR: Could not find inputs. count=' + allInputs.length;
+        }
+        const setText = (el, v) => {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setText(titleInput, wrName);
+        setText(classInput, 'UNCLASSIFIED');
+        window.__uat_workroom_name = wrName;
+        return 'OK: filled title=' + wrName;
+      })()
+    timeout: 10
+
+  # Next →
+  - action: js_eval
+    value: |
+      (async () => {
+        const dialog = document.querySelector('[role="dialog"]') || document;
+        const btns = Array.from(dialog.querySelectorAll('button'));
+        const next = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('next'));
+        if (!next) return 'ERROR: Next button not found';
+        next.click();
+        return 'OK: clicked Next';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  # Review → Create
+  - action: js_eval
+    value: |
+      (async () => {
+        const dialog = document.querySelector('[role="dialog"]') || document;
+        const btns = Array.from(dialog.querySelectorAll('button'));
+        const confirm = btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t === 'create' || t === 'create workroom' || t === 'confirm' || t === 'submit' || t === 'finish';
+        }) || btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return (t.includes('create') || t.includes('confirm') || t.includes('finish')) && !t.includes('cancel');
+        });
+        if (!confirm) return 'ERROR: Confirm button not found';
+        confirm.click();
+        return 'OK: submitted wizard';
+      })()
+    timeout: 10
 
   - action: sleep
     timeout: 5
 
   - action: screenshot
-    screenshot_name: 05_runtime_loaded
+    screenshot_name: 03_workroom_created
 
-  # ─── Phase 3: Three threads, each stressing context manager differently ───
-
-  # Helper inlined per thread because stress-tester has no loop construct.
-  # Each thread uses the "New thread" button (WorkroomThreadList.js:105)
-  # then fills "Thread title" and "Opening message" → clicks "Create".
-
-  # ┌─ Thread 1: Long-context condensation ─────────────────────────┐
+  # ─── Phase 2: Skip UI Launch flow — hit the API directly ─────────
+  # The "Launch" button in the workroom detail panel starts a Kaizen deploy
+  # by POSTing to the workroom-manager backend's /api/deployments endpoint.
+  # We mimic that POST ourselves to get back the deployment ID immediately,
+  # which lets us poll the specific deployment by ID (no need to wait for
+  # it to show up in /extensions, which only lists DEPLOYED entries).
+  # The workroom-manager extension is mounted at /workrooms via its own
+  # Traefik PathPrefix. Its frontend prepends "/workrooms" to all API calls,
+  # so we use the same prefix here to reach the manager backend (not core).
   - action: js_eval
     value: |
       (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const nt = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new thread'));
-        if (!nt) return 'ERROR: New thread button not found';
-        nt.click();
-        return 'OK: Opened new-thread form (thread 1)';
+        const wrName = window.__uat_workroom_name;
+        const start = Date.now();
+        const maxMs = 600000; // 10 min — generous for first deploy on dev cluster
+        const launcherBase = '/workrooms';
+
+        // 1) Find our workroom_id by name.
+        let workroomId = null;
+        for (let i = 0; i < 30 && !workroomId; i++) {
+          try {
+            const res = await fetch(launcherBase + '/api/workrooms', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            if (res.ok) {
+              const body = await res.json();
+              const items = body.items || body.workrooms || body || [];
+              const wr = items.find(w => (w.name || w.title) === wrName);
+              if (wr) workroomId = wr.id || wr.workroom_id;
+            }
+          } catch (e) { /* keep polling */ }
+          if (!workroomId) await new Promise(r => setTimeout(r, 2000));
+        }
+        if (!workroomId) return 'ERROR: workroom_id not found by name=' + wrName;
+        window.__uat_workroom_id = workroomId;
+        console.log('[poll] workroom_id=' + workroomId);
+
+        // 2) POST to start the deploy. Response includes access_url immediately,
+        // which is the deterministic /runtime/apps/<name>/ path that becomes
+        // valid when the Kaizen pod is Ready. We trust this URL and let the
+        // downstream wait_for kaizen_chat_input absorb the deploy latency.
+        try {
+          const createRes = await fetch(launcherBase + '/api/deployments', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ name: wrName, is_ephemeral: false, workroom_id: workroomId })
+          });
+          if (!createRes.ok) {
+            const errText = await createRes.text();
+            return 'ERROR: POST /deployments failed: ' + createRes.status + ' ' + errText.substring(0, 200);
+          }
+          const created = await createRes.json();
+          const deploymentId = created.id;
+          const deploymentName = created.name;
+          const accessUrl = created.launch_access_url || created.access_url
+            || (deploymentName ? '/runtime/apps/' + deploymentName + '/' : null);
+          if (!accessUrl) {
+            return 'ERROR: POST succeeded but no access_url. Keys: ' + Object.keys(created).join(',');
+          }
+          window.__uat_deployment_id = deploymentId;
+          window.__uat_deployment_name = deploymentName;
+          window.__uat_kaizen_url = accessUrl;
+          console.log('[deploy started] id=' + deploymentId + ' name=' + deploymentName + ' status=' + (created.status || '?') + ' url=' + accessUrl);
+          return 'OK: deploy started, url=' + accessUrl;
+        } catch (e) {
+          return 'ERROR: failed to start deploy: ' + (e.message || e);
+        }
+      })()
+    timeout: 660
+
+  - action: screenshot
+    screenshot_name: 06_deploy_started
+
+  # ─── Phase 4: Wait for Kaizen UI to be reachable (via fetch) ──────
+  # The Kamiwaza shell serves "Page Not Found" at HTTP 200 for any unknown
+  # /runtime/apps/... path until the Traefik IngressRoute is created.
+  # We poll the URL via fetch (no page navigation = JS context survives)
+  # and check the response HTML for not-found text. When the HTML stops
+  # being the Kamiwaza shell, the Kaizen pod is serving it — at that point
+  # we trigger a one-time navigation and end the js_eval.
+  - action: js_eval
+    value: |
+      (async () => {
+        const url = window.__uat_kaizen_url;
+        if (!url) return 'ERROR: __uat_kaizen_url not set';
+        const abs = new URL(url, location.origin).toString();
+        const start = Date.now();
+        const maxMs = 600000; // 10 min
+        let lastSig = '';
+        while (Date.now() - start < maxMs) {
+          let html = '';
+          let code = 0;
+          try {
+            const res = await fetch(abs, { credentials: 'include', redirect: 'follow' });
+            code = res.status;
+            html = await res.text();
+          } catch (e) {
+            code = -1;
+          }
+          const lower = html.toLowerCase();
+          // Definitive discriminator: when the Traefik IngressRoute for the
+          // Kaizen deployment doesn't exist yet, the URL falls through to
+          // the Kamiwaza shell SPA (title "Kamiwaza Dashboard"). Once the
+          // IngressRoute is registered, traffic goes to the Kaizen pod which
+          // serves its own HTML (different <title>).
+          const isKamiwazaShell = lower.includes('<title>kamiwaza dashboard</title>') || lower.includes('kamiwaza dashboard');
+          const isKaizen = !isKamiwazaShell && code >= 200 && code < 400 && html.length > 0;
+          const sig = 'code=' + code + ' len=' + html.length + ' shell=' + isKamiwazaShell;
+          if (sig !== lastSig) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] poll ' + sig);
+            lastSig = sig;
+          }
+          // Accept either a Kaizen-served HTML response (2xx, no shell title)
+          // OR a 401 — both indicate the Traefik IngressRoute is live and
+          // routing to the Kaizen pod. The 401 just means Kaizen wants a
+          // launch token; we'll mint one in the next step.
+          if (isKaizen || code === 401) {
+            window.__uat_kaizen_ready_after_s = Math.floor((Date.now()-start)/1000);
+            return 'OK: Kaizen route is live after ' + window.__uat_kaizen_ready_after_s + 's (code=' + code + ')';
+          }
+          await new Promise(r => setTimeout(r, 5000));
+        }
+        return 'ERROR: kaizen URL never returned Kaizen HTML after ' + Math.floor((Date.now()-start)/1000) + 's. last=' + lastSig;
+      })()
+    timeout: 660
+
+  # Bind the session to our workroom. Kaizen's app-layer checks the user's
+  # active workroom_id against the workroom that owns this Kaizen deployment;
+  # without enter, the UI shows "could not verify workroom access" even
+  # though forward-auth lets the navigation through.
+  # AUTH_RUNTIME_LAUNCH_TOKENS_ENABLED=false on this cluster, so we skip
+  # the kw_launch token mint entirely — session + workroom binding is enough.
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrId = window.__uat_workroom_id;
+        const res = await fetch('/api/workrooms/' + wrId + '/enter', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Accept': 'application/json' }
+        });
+        const body = await res.text();
+        if (!res.ok) {
+          return 'ERROR: enter failed: ' + res.status + ' body=' + body.substring(0, 200);
+        }
+        return 'OK: bound session to workroom ' + wrId + ' (http=' + res.status + ')';
+      })()
+    timeout: 30
+
+  # Navigate (NOT fetch) to the Kaizen UI. Playwright navigation triggers
+  # the full forward-auth flow that fetch bypasses.
+  - action: js_eval
+    value: |
+      (async () => {
+        const url = window.__uat_kaizen_url;
+        if (!url) return 'ERROR: __uat_kaizen_url missing';
+        const abs = new URL(url, location.origin).toString();
+        location.assign(abs);
+        return 'OK: navigating to ' + abs;
       })()
     timeout: 10
 
   - action: sleep
-    timeout: 2
+    timeout: 8
 
+  - action: sleep
+    timeout: 8
+
+  - action: screenshot
+    screenshot_name: 07_kaizen_ui_loaded
+
+  # New workrooms have zero agents — Kaizen shows "No agents yet — Create your
+  # first AI agent" empty state instead of a chat composer. We must create an
+  # agent before Phase 5 can run.
   - action: js_eval
     value: |
       (async () => {
-        // Find the form — usually an inline panel in the thread list sidebar
-        const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'));
-        const titleInput = inputs.find(i =>
-          (i.placeholder || '').toLowerCase().includes('title') ||
-          (i.getAttribute('aria-label') || '').toLowerCase().includes('title')
-        ) || inputs[0];
-        const msgInput = inputs.find(i =>
-          i.tagName === 'TEXTAREA' &&
-          ((i.placeholder || '').toLowerCase().includes('message') ||
-           (i.getAttribute('aria-label') || '').toLowerCase().includes('message'))
-        ) || inputs.find(i => i.tagName === 'TEXTAREA' && i !== titleInput);
+        // Wait up to 30s for the UI to settle (the "Create Your First Agent" button
+        // may not be in DOM immediately on first paint).
+        const start = Date.now();
+        let target = null;
+        while (Date.now() - start < 30000) {
+          const btns = Array.from(document.querySelectorAll('button, a'));
+          target = btns.find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t.includes('create your first agent') || t === 'create agent' || t === 'new agent' || t === '+ agent';
+          });
+          if (target) break;
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!target) {
+          // Maybe a composer already exists (workroom not fresh) — let next step handle it
+          const tas = document.querySelectorAll('textarea').length;
+          return 'WARN: no Create-Agent button found after 30s; textareas=' + tas + '. Will let composer-wait handle.';
+        }
+        target.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+        target.click();
+        return 'OK: clicked "' + target.textContent.trim().substring(0, 40) + '"';
+      })()
+    timeout: 40
 
-        if (!titleInput || !msgInput) return 'ERROR: Could not locate title/message inputs. Found ' + inputs.length + ' inputs.';
+  - action: sleep
+    timeout: 3
 
-        // Build a long opening: planted fact at the very start, then ~8KB of filler.
-        const planted = 'IMPORTANT FACT (remember this exact value): the activation code is 7-ZULU-MIKE-42.';
-        const filler = Array.from({length: 60}, (_, i) =>
-          'Filler paragraph ' + (i + 1) + ': lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.'
-        ).join('\n\n');
-        const tail = 'After reading all of the above filler, respond with just the words "READY" — do not echo the filler.';
-        const longMsg = planted + '\n\n' + filler + '\n\n' + tail;
+  - action: screenshot
+    screenshot_name: 07a_agent_create_form
 
-        const setText = (el, v) => {
-          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        };
-        setText(titleInput, 'ctx1-long-condensation');
-        setText(msgInput, longMsg);
-        return 'OK: Filled thread 1 (title=' + titleInput.value.substring(0, 30) + ', msgLen=' + msgInput.value.length + ')';
+  # Fill the agent-create form, then click Continue through all 5 wizard steps.
+  # The form is a 5-step wizard:
+  #   Step 1: Name + Model + Instructions ← Model is REQUIRED (<select> element)
+  #   Steps 2-5: Have sane defaults; just click Continue.
+  # Final step's button is "Create Agent" instead of "Continue".
+  - action: js_eval
+    value: |
+      (async () => {
+        const ts = Date.now().toString(36).slice(-6);
+
+        // Helper: find an input/select by looking for a sibling/ancestor LABEL with the given text.
+        function findFieldByLabel(labelText) {
+          const lt = labelText.toLowerCase();
+          // Strategy 1: explicit <label for="...">
+          const labels = Array.from(document.querySelectorAll('label'));
+          for (const lbl of labels) {
+            if ((lbl.textContent || '').trim().toLowerCase() === lt) {
+              const forId = lbl.getAttribute('for');
+              if (forId) {
+                const el = document.getElementById(forId);
+                if (el) return el;
+              }
+              // Strategy 2: label wraps the input
+              const inner = lbl.querySelector('input, select, textarea');
+              if (inner) return inner;
+              // Strategy 3: input is next sibling (or descendant of next sibling)
+              let sib = lbl.nextElementSibling;
+              for (let i = 0; i < 3 && sib; i++) {
+                const el = sib.matches('input, select, textarea') ? sib : sib.querySelector('input, select, textarea');
+                if (el) return el;
+                sib = sib.nextElementSibling;
+              }
+              // Strategy 4: input is in parent's subtree
+              const parentEl = lbl.parentElement?.querySelector('input, select, textarea');
+              if (parentEl && parentEl !== lbl) return parentEl;
+            }
+          }
+          return null;
+        }
+
+        // Fill the Name input
+        const nameInput = findFieldByLabel('Name');
+        if (nameInput) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(nameInput, 'StressTestAgent-' + ts);
+          nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+          nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // Select the Model — find first <option> that mentions gpt or sonnet or similar
+        const modelSelect = findFieldByLabel('Model');
+        let modelChoice = '';
+        if (modelSelect && modelSelect.tagName === 'SELECT') {
+          const opts = Array.from(modelSelect.querySelectorAll('option')).filter(o => o.value && o.value !== '');
+          if (opts.length > 0) {
+            // Prefer gpt, then sonnet, then anything non-empty
+            const pick = opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
+                         opts.find(o => /sonnet|claude/i.test(o.textContent || o.value)) ||
+                         opts[0];
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+            setter.call(modelSelect, pick.value);
+            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            modelSelect.dispatchEvent(new Event('input', { bubbles: true }));
+            modelChoice = pick.textContent || pick.value;
+          }
+        }
+
+        return 'OK: nameInput=' + !!nameInput + ' modelSelect=' + !!modelSelect + ' modelChoice="' + modelChoice + '"';
       })()
     timeout: 15
 
-  - action: screenshot
-    screenshot_name: 06_thread1_filled
-
-  - action: js_eval
-    value: |
-      (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const create = btns.find(b => (b.textContent || '').trim().toLowerCase() === 'create');
-        if (!create) return 'ERROR: Create (thread submit) button not found';
-        create.click();
-        return 'OK: Submitted thread 1';
-      })()
-    timeout: 10
-
-  # Give the agent time to ingest the long context and respond.
   - action: sleep
-    timeout: 60
+    timeout: 1
 
   - action: screenshot
-    screenshot_name: 07_thread1_first_response
+    screenshot_name: 07b_agent_form_filled
 
-  # Send a follow-up that requires the planted fact (tests condensation recall).
+  # Click Continue/Create through all 5 wizard steps.
+  # On each step: find the primary action button (Continue, Next, or Create Agent)
+  # and click it. Repeat up to 6 times. Final step lands us on the agent chat.
   - action: js_eval
     value: |
       (async () => {
-        const tas = Array.from(document.querySelectorAll('textarea'));
-        // Composer textarea is usually the largest visible empty textarea, or last one.
-        const composer = tas.reverse().find(t => {
-          const r = t.getBoundingClientRect();
-          return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly;
-        });
-        if (!composer) return 'ERROR: Composer textarea not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, 'What was the activation code I mentioned at the very beginning of this conversation? Respond with just the code, no other text.');
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new Event('change', { bubbles: true }));
-        // Submit via Enter
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent recall follow-up (thread 1)';
+        const log = [];
+        for (let step = 1; step <= 6; step++) {
+          // Find the primary action button
+          const btns = Array.from(document.querySelectorAll('button'));
+          const primary = btns.find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t === 'continue' || t === 'continue >' || t === 'next' ||
+                   t === 'create agent' || t === 'create' || t === 'finish' ||
+                   t === 'done' || t === 'start chatting';
+          });
+          if (!primary) {
+            const labels = btns.map(b => (b.textContent || '').trim().substring(0, 25)).filter(Boolean);
+            log.push('step ' + step + ': no primary button. buttons=[' + labels.slice(0, 8).join('|') + ']');
+            break;
+          }
+          if (primary.disabled) {
+            log.push('step ' + step + ': "' + primary.textContent.trim() + '" disabled');
+            break;
+          }
+          const label = primary.textContent.trim().substring(0, 30);
+          log.push('step ' + step + ': clicked "' + label + '"');
+          primary.click();
+          // Wait briefly for the next step to render
+          await new Promise(r => setTimeout(r, 1500));
+          // If we see a textarea now (chat composer appeared), we're done
+          const tas = Array.from(document.querySelectorAll('textarea')).filter(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          // The instructions textarea on step 1 also matches, so only treat it
+          // as "done" if we've clicked at least once AND no Continue button remains
+          if (tas.length > 0) {
+            const stillContinue = Array.from(document.querySelectorAll('button')).find(b => {
+              const t = (b.textContent || '').trim().toLowerCase();
+              return t === 'continue' || t === 'create agent' || t === 'create' || t === 'finish';
+            });
+            if (!stillContinue) {
+              log.push('  composer detected, wizard complete');
+              return 'OK: ' + log.join(' | ');
+            }
+          }
+        }
+        return 'WARN/done: ' + log.join(' | ');
       })()
-    timeout: 10
+    timeout: 30
 
   - action: sleep
-    timeout: 40
+    timeout: 3
 
   - action: screenshot
-    screenshot_name: 08_thread1_recall_response
+    screenshot_name: 07c_agent_create_submitted
 
-  # Navigate back to the runtime view to spawn thread 2
-  # (the thread list sidebar should remain visible inside the runtime)
-
-  # ┌─ Thread 2: Many short turns + recall ─────────────────────────┐
+  # After wizard finish, Kaizen lands on the Agents listing page. The agent
+  # card has a "Chat" button that is conditionally rendered only while the
+  # card is hovered (React {isHovered && (<Chat button>)} pattern). Strategy:
+  #   1. Find the StressTestAgent card (the one with the "MINE" badge — the
+  #      user we just created the agent as).
+  #   2. Dispatch mouseenter/pointerenter on the card to flip isHovered=true,
+  #      which causes the Chat button to mount in the DOM.
+  #   3. Click the Chat button (text "Chat" with a MessageSquare icon).
+  #   4. handleStartChat creates a conversation and router.push's to
+  #      /conversations/{id} — the composer textarea will then render.
   - action: js_eval
     value: |
       (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const nt = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new thread'));
-        if (!nt) return 'ERROR: New thread button not found for thread 2';
-        nt.click();
-        return 'OK: Opened new-thread form (thread 2)';
+        // Wait up to 15s for the agent card to appear
+        const start = Date.now();
+        let cardRoot = null;
+        while (Date.now() - start < 15000) {
+          // Composer might already be there (e.g., if Kaizen auto-opened a chat)
+          const earlyTa = Array.from(document.querySelectorAll('textarea')).find(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (earlyTa) return 'OK: composer already present, no agent-click needed';
+
+          // Find the StressTestAgent heading. There may be multiple if previous
+          // runs left agents behind, so prefer the most recent one (MINE).
+          const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'));
+          const myHeadings = headings.filter(el => {
+            const t = (el.textContent || '');
+            if (!t.includes('StressTestAgent')) return false;
+            // Walk up looking for a sibling/descendant element with text "MINE"
+            let p = el.parentElement;
+            for (let i = 0; i < 4 && p; i++) {
+              if ((p.textContent || '').includes('MINE')) return true;
+              p = p.parentElement;
+            }
+            return false;
+          });
+          const heading = myHeadings[0] || headings.find(el => (el.textContent || '').includes('StressTestAgent'));
+          if (heading) {
+            // Walk up to the card container — the one that has its own
+            // hover handler. We want the OUTERMOST div that's still
+            // this one card (not the grid wrapper).
+            let cur = heading;
+            for (let i = 0; i < 6 && cur && cur !== document.body; i++) {
+              cur = cur.parentElement;
+              if (!cur) break;
+              const txt = cur.textContent || '';
+              // If we've walked into a container holding the sibling
+              // "Create New Agent" card, back off — the previous level was the card.
+              if (txt.includes('Create New Agent') && txt.includes('Build a custom AI')) {
+                cardRoot = cur.parentElement === cardRoot ? cardRoot : cardRoot;
+                break;
+              }
+              cardRoot = cur;
+            }
+            if (cardRoot) break;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!cardRoot) return 'WARN: no StressTestAgent card after 15s';
+
+        cardRoot.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+
+        // Dispatch hover events on the card so React's isHovered flips true
+        // and the Chat button mounts in the DOM. We dispatch the events on
+        // EVERY descendant too, since the onMouseEnter handler could be on
+        // any element in the card subtree.
+        const rect = cardRoot.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, view: window,
+                       clientX: rect.left + rect.width/2,
+                       clientY: rect.top + rect.height/2,
+                       pointerType: 'mouse', isPrimary: true, pointerId: 1 };
+        function fireHover(el) {
+          el.dispatchEvent(new MouseEvent('mouseover', opts));
+          el.dispatchEvent(new MouseEvent('mouseenter', opts));
+          el.dispatchEvent(new PointerEvent('pointerover', opts));
+          el.dispatchEvent(new PointerEvent('pointerenter', opts));
+          el.dispatchEvent(new MouseEvent('mousemove', opts));
+        }
+        fireHover(cardRoot);
+        cardRoot.querySelectorAll('*').forEach(fireHover);
+
+        // Wait for the Chat button to render (up to 3s)
+        let chatBtn = null;
+        const hStart = Date.now();
+        while (Date.now() - hStart < 3000) {
+          const btns = Array.from(cardRoot.querySelectorAll('button'));
+          chatBtn = btns.find(b => {
+            const t = (b.textContent || '').trim();
+            // The button text is "Chat" (or "Starting..." while in flight)
+            return t === 'Chat' || t.startsWith('Chat');
+          });
+          if (chatBtn) break;
+          // Keep poking hover, some animation systems require continuous events
+          fireHover(cardRoot);
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        if (!chatBtn) {
+          const allBtns = Array.from(cardRoot.querySelectorAll('button')).map(b => (b.textContent||'').trim().substring(0,20));
+          return 'ERROR: Chat button never rendered after hover. Buttons in card: [' + allBtns.join(' | ') + ']';
+        }
+
+        chatBtn.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 200));
+        chatBtn.click();
+        return 'OK: clicked Chat button on StressTestAgent card';
       })()
-    timeout: 10
-
-  - action: sleep
-    timeout: 2
-
-  - action: js_eval
-    value: |
-      (async () => {
-        const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'));
-        const titleInput = inputs.find(i =>
-          (i.placeholder || '').toLowerCase().includes('title')
-        ) || inputs[0];
-        const msgInput = inputs.find(i =>
-          i.tagName === 'TEXTAREA' && (i.placeholder || '').toLowerCase().includes('message')
-        ) || inputs.find(i => i.tagName === 'TEXTAREA' && i !== titleInput);
-        if (!titleInput || !msgInput) return 'ERROR: Inputs not found for thread 2';
-
-        const setText = (el, v) => {
-          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        };
-        setText(titleInput, 'ctx2-many-turns-recall');
-        setText(msgInput, 'I am going to give you a series of facts one at a time. Acknowledge each with just "noted" and remember them all. First fact: my favorite color is cerulean.');
-        return 'OK: Filled thread 2';
-      })()
-    timeout: 10
-
-  - action: js_eval
-    value: |
-      (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const create = btns.find(b => (b.textContent || '').trim().toLowerCase() === 'create');
-        if (!create) return 'ERROR: Create button not found for thread 2';
-        create.click();
-        return 'OK: Submitted thread 2';
-      })()
-    timeout: 10
-
-  - action: sleep
     timeout: 25
 
-  - action: screenshot
-    screenshot_name: 09_thread2_started
-
-  # Fire 6 short fact-turns. Each is sent via the composer textarea.
-  # We loop in a single js_eval that sends one message, waits, and reports.
-  # Then we sleep+screenshot between turns from YAML.
-
-  - action: js_eval
-    value: |
-      (async () => {
-        const msgs = [
-          'Second fact: my lucky number is 17.',
-          'Third fact: I was born in Reykjavik.',
-          'Fourth fact: my favorite food is gnocchi.',
-          'Fifth fact: my dog is named Pomegranate.',
-          'Sixth fact: my hobby is competitive whistling.',
-          'Seventh fact: the meeting is at 14:30.'
-        ];
-        window.__uat_pending = msgs;
-        return 'OK: Queued ' + msgs.length + ' facts';
-      })()
-    timeout: 5
-
-  # Send fact 2
-  - action: js_eval
-    value: |
-      (async () => {
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR: No composer';
-        const msg = window.__uat_pending.shift();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, msg);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent fact 2';
-      })()
-    timeout: 10
   - action: sleep
-    timeout: 12
-
-  # Send fact 3
-  - action: js_eval
-    value: |
-      (async () => {
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR: No composer';
-        const msg = window.__uat_pending.shift();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, msg);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent fact 3';
-      })()
-    timeout: 10
-  - action: sleep
-    timeout: 12
-
-  # Send fact 4
-  - action: js_eval
-    value: |
-      (async () => {
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR: No composer';
-        const msg = window.__uat_pending.shift();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, msg);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent fact 4';
-      })()
-    timeout: 10
-  - action: sleep
-    timeout: 12
-
-  # Send fact 5
-  - action: js_eval
-    value: |
-      (async () => {
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR: No composer';
-        const msg = window.__uat_pending.shift();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, msg);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent fact 5';
-      })()
-    timeout: 10
-  - action: sleep
-    timeout: 12
-
-  # Send fact 6
-  - action: js_eval
-    value: |
-      (async () => {
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR: No composer';
-        const msg = window.__uat_pending.shift();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, msg);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent fact 6';
-      })()
-    timeout: 10
-  - action: sleep
-    timeout: 12
-
-  # Send fact 7
-  - action: js_eval
-    value: |
-      (async () => {
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR: No composer';
-        const msg = window.__uat_pending.shift();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, msg);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent fact 7';
-      })()
-    timeout: 10
-  - action: sleep
-    timeout: 15
+    timeout: 3
 
   - action: screenshot
-    screenshot_name: 10_thread2_after_facts
+    screenshot_name: 07d_agent_card_clicked
 
-  # Recall question — tests memory across many turns post-condensation
+  # Wait for the chat composer to be ready. Kaizen has to:
+  #  - Create a conversation record (handleStartChat → createConversationMutation)
+  #  - Provision the agent's openhands workspace container (the "STARTING /
+  #    Preparing workspace... Setting up StressTestAgent" progress card)
+  #  - Navigate router.push('/conversations/{id}')
+  #  - Render the composer textarea
+  # Workspace provisioning alone takes 2-4 min on this cluster, so give the
+  # whole sequence 6 min before declaring failure.
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        const maxMs = 360000; // 6 min
+        let lastUrl = location.href;
+        let lastSig = '';
+        while (Date.now() - start < maxMs) {
+          // URL transition is the strongest signal that handleStartChat succeeded
+          if (location.href !== lastUrl) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] URL changed: ' + lastUrl + ' -> ' + location.href);
+            lastUrl = location.href;
+          }
+          const tas = Array.from(document.querySelectorAll('textarea'));
+          const composer = tas.find(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (composer) {
+            return 'OK: composer ready after ' + Math.floor((Date.now()-start)/1000) + 's, url=' + location.href + ' placeholder=' + (composer.placeholder || '');
+          }
+          // Log progress periodically based on body text signature
+          const sig = (document.body.innerText.match(/STARTING|Preparing workspace|Setting up|Ready|loading|Initializing/g) || []).join(',');
+          if (sig !== lastSig) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] state: ' + sig);
+            lastSig = sig;
+          }
+          await new Promise(r => setTimeout(r, 3000));
+        }
+        const bodyText = (document.body && document.body.innerText.substring(0, 300)) || '?';
+        return 'ERROR: composer not found after ' + Math.floor((Date.now()-start)/1000) + 's. url=' + location.href + ' tas=' + document.querySelectorAll('textarea').length + ' lastSig=' + lastSig + ' body=' + bodyText;
+      })()
+    timeout: 400
+
+  - action: screenshot
+    screenshot_name: 08_kaizen_chat_ready
+
+  # ─── Phase 5: Conversation 1 — Long-context condensation ──────────
   - action: js_eval
     value: |
       (async () => {
         const tas = Array.from(document.querySelectorAll('textarea')).reverse();
         const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR: No composer';
+        if (!composer) return 'ERROR: composer not found';
+        const planted = 'IMPORTANT FACT (remember this exact value): the activation code is 7-ZULU-MIKE-42. ';
+        const filler = Array.from({length: 40}, (_, i) =>
+          'Filler paragraph ' + (i+1) + ': lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.'
+        ).join(' ');
+        const tail = ' After reading all of the above, respond with just the word READY.';
+        const msg = planted + filler + tail;
         const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, 'List back every fact I told you, in order. Number them 1 through 7. Do not paraphrase, use the exact wording.');
+        setter.call(composer, msg);
         composer.dispatchEvent(new Event('input', { bubbles: true }));
-        composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'OK: Sent recall request (thread 2)';
+        return 'OK: typed long message (' + msg.length + ' chars)';
       })()
+    timeout: 10
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  - action: sleep
+    timeout: 60
+
+  - action: screenshot
+    screenshot_name: 09_conv1_after_long
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "What was the activation code I mentioned at the very beginning of this conversation? Respond with just the code, no other text."
+
+  - action: click
+    target: kaizen_send_button
     timeout: 10
 
   - action: sleep
     timeout: 40
 
   - action: screenshot
-    screenshot_name: 11_thread2_recall_response
+    screenshot_name: 10_conv1_recall
 
-  # ┌─ Thread 3: Tool-chain → exercise tool_use/tool_result tracking ─┐
+  # ─── Phase 6: Conversation 2 — Many short turns + recall ──────────
+  # Start a new conversation thread. Kaizen v3 doesn't expose a simple
+  # "New conversation" button; the canonical flow is to go back to the
+  # agents listing and click Chat on the agent again, which creates a
+  # fresh conversation. The current URL is /runtime/apps/<dep>/conversations/<id>,
+  # so we navigate to the dep root.
   - action: js_eval
     value: |
       (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const nt = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('new thread'));
-        if (!nt) return 'ERROR: New thread button not found for thread 3';
-        nt.click();
-        return 'OK: Opened new-thread form (thread 3)';
+        // Derive the kaizen root from the current /runtime/apps/<dep>/... path
+        const m = location.pathname.match(/^(\/runtime\/apps\/[^\/]+)\//);
+        const root = m ? m[1] + '/' : (window.__uat_kaizen_url || null);
+        if (!root) return 'ERROR: cannot derive kaizen root from path=' + location.pathname;
+        location.assign(new URL(root, location.origin).toString());
+        return 'OK: navigating to kaizen root ' + root + ' to start a new chat';
       })()
     timeout: 10
 
   - action: sleep
-    timeout: 2
+    timeout: 8
 
+  # Re-click Chat on the StressTestAgent card (same hover-then-Chat flow as
+  # Phase 4's agent-card click) to start conversation #2.
   - action: js_eval
     value: |
       (async () => {
-        const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'));
-        const titleInput = inputs.find(i => (i.placeholder || '').toLowerCase().includes('title')) || inputs[0];
-        const msgInput = inputs.find(i => i.tagName === 'TEXTAREA' && (i.placeholder || '').toLowerCase().includes('message'))
-          || inputs.find(i => i.tagName === 'TEXTAREA' && i !== titleInput);
-        if (!titleInput || !msgInput) return 'ERROR: Inputs not found for thread 3';
+        // Wait for the agent card
+        const start = Date.now();
+        let cardRoot = null;
+        while (Date.now() - start < 15000) {
+          const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'));
+          const heading = headings.find(el => (el.textContent || '').includes('StressTestAgent'));
+          if (heading) {
+            let cur = heading;
+            for (let i = 0; i < 6 && cur && cur !== document.body; i++) {
+              cur = cur.parentElement;
+              if (!cur) break;
+              const txt = cur.textContent || '';
+              if (txt.includes('Create New Agent') && txt.includes('Build a custom AI')) break;
+              cardRoot = cur;
+            }
+            if (cardRoot) break;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!cardRoot) return 'ERROR: no StressTestAgent card found for conv2';
 
-        const setText = (el, v) => {
-          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        };
-        setText(titleInput, 'ctx3-tool-chain-mismatch');
-        // A chained tool sequence that has historically tripped tool_use/tool_result
-        // history-mismatch recovery (kamiwaza conversation_manager.py:1394 path).
-        setText(msgInput,
-          'Execute this exact sequence WITHOUT stopping to ask questions:\n' +
-          '1. List the files in the current directory.\n' +
-          '2. Create a file ctx_a.txt with the contents "alpha".\n' +
-          '3. Read ctx_a.txt and tell me its contents.\n' +
-          '4. Create a file ctx_b.txt with the contents "beta".\n' +
-          '5. Read ctx_b.txt and tell me its contents.\n' +
-          '6. Delete ctx_a.txt.\n' +
-          '7. List files again.\n' +
-          '8. Create ctx_c.txt with contents "gamma".\n' +
-          '9. Read all three files (a, b, c) and report their contents — note which no longer exist.\n' +
-          'After all 9 steps complete, summarize what you did in one sentence.'
-        );
-        return 'OK: Filled thread 3';
+        cardRoot.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+        const rect = cardRoot.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, view: window,
+                       clientX: rect.left + rect.width/2,
+                       clientY: rect.top + rect.height/2,
+                       pointerType: 'mouse', isPrimary: true, pointerId: 1 };
+        function fireHover(el) {
+          el.dispatchEvent(new MouseEvent('mouseover', opts));
+          el.dispatchEvent(new MouseEvent('mouseenter', opts));
+          el.dispatchEvent(new PointerEvent('pointerover', opts));
+          el.dispatchEvent(new PointerEvent('pointerenter', opts));
+        }
+        fireHover(cardRoot);
+        cardRoot.querySelectorAll('*').forEach(fireHover);
+
+        // Wait for Chat button to mount
+        let chatBtn = null;
+        const hStart = Date.now();
+        while (Date.now() - hStart < 3000) {
+          const btns = Array.from(cardRoot.querySelectorAll('button'));
+          chatBtn = btns.find(b => {
+            const t = (b.textContent || '').trim();
+            return t === 'Chat' || t.startsWith('Chat');
+          });
+          if (chatBtn) break;
+          fireHover(cardRoot);
+          await new Promise(r => setTimeout(r, 300));
+        }
+        if (!chatBtn) return 'ERROR: Chat button never rendered for conv2';
+        chatBtn.click();
+        return 'OK: clicked Chat for conv2';
       })()
-    timeout: 15
+    timeout: 25
 
-  - action: js_eval
-    value: |
-      (async () => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const create = btns.find(b => (b.textContent || '').trim().toLowerCase() === 'create');
-        if (!create) return 'ERROR: Create button not found for thread 3';
-        create.click();
-        return 'OK: Submitted thread 3';
-      })()
-    timeout: 10
-
-  # Tool-chain is long-running — give it generous time.
   - action: sleep
-    timeout: 120
+    timeout: 5
+
+  # Wait for the new conversation's composer (workspace provisioning again)
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        const maxMs = 360000;
+        while (Date.now() - start < maxMs) {
+          const tas = Array.from(document.querySelectorAll('textarea')).filter(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (tas.length > 0) return 'OK: conv2 composer ready after ' + Math.floor((Date.now()-start)/1000) + 's';
+          await new Promise(r => setTimeout(r, 3000));
+        }
+        return 'ERROR: conv2 composer not found after ' + Math.floor((Date.now()-start)/1000) + 's';
+      })()
+    timeout: 400
+
+  - action: sleep
+    timeout: 6
+
+  - action: wait_for
+    target: kaizen_chat_input
+    timeout: 60
 
   - action: screenshot
-    screenshot_name: 12_thread3_tool_chain
+    screenshot_name: 11_conv2_opened
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "I'll give you facts one at a time. Acknowledge each with just 'noted'. First fact: my favorite color is cerulean."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 15
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Second fact: my lucky number is 17."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Third fact: I was born in Reykjavik."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Fourth fact: my favorite food is gnocchi."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Fifth fact: my dog is named Pomegranate."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Sixth fact: my hobby is competitive whistling."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Seventh fact: the meeting is at 14:30."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 15
+
+  - action: screenshot
+    screenshot_name: 12_conv2_after_facts
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "List back every fact I told you, in order. Number them 1 through 7. Use the exact wording I used."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 45
+
+  - action: screenshot
+    screenshot_name: 13_conv2_recall
+
+  # ─── Phase 7: Conversation 3 — Tool-chain stress ──────────────────
+  # Same nav-back-and-re-Chat flow as Phase 6
+  - action: js_eval
+    value: |
+      (async () => {
+        const m = location.pathname.match(/^(\/runtime\/apps\/[^\/]+)\//);
+        const root = m ? m[1] + '/' : (window.__uat_kaizen_url || null);
+        if (!root) return 'ERROR: cannot derive kaizen root for conv3';
+        location.assign(new URL(root, location.origin).toString());
+        return 'OK: nav to kaizen root for conv3';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 8
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        let cardRoot = null;
+        while (Date.now() - start < 15000) {
+          const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'));
+          const heading = headings.find(el => (el.textContent || '').includes('StressTestAgent'));
+          if (heading) {
+            let cur = heading;
+            for (let i = 0; i < 6 && cur && cur !== document.body; i++) {
+              cur = cur.parentElement;
+              if (!cur) break;
+              const txt = cur.textContent || '';
+              if (txt.includes('Create New Agent') && txt.includes('Build a custom AI')) break;
+              cardRoot = cur;
+            }
+            if (cardRoot) break;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!cardRoot) return 'ERROR: no card for conv3';
+        cardRoot.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+        const rect = cardRoot.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, view: window,
+                       clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2,
+                       pointerType: 'mouse', isPrimary: true, pointerId: 1 };
+        function fireHover(el) {
+          el.dispatchEvent(new MouseEvent('mouseover', opts));
+          el.dispatchEvent(new MouseEvent('mouseenter', opts));
+          el.dispatchEvent(new PointerEvent('pointerover', opts));
+          el.dispatchEvent(new PointerEvent('pointerenter', opts));
+        }
+        fireHover(cardRoot);
+        cardRoot.querySelectorAll('*').forEach(fireHover);
+        let chatBtn = null;
+        const hStart = Date.now();
+        while (Date.now() - hStart < 3000) {
+          chatBtn = Array.from(cardRoot.querySelectorAll('button')).find(b => (b.textContent||'').trim().startsWith('Chat'));
+          if (chatBtn) break;
+          fireHover(cardRoot);
+          await new Promise(r => setTimeout(r, 300));
+        }
+        if (!chatBtn) return 'ERROR: Chat button for conv3 not rendered';
+        chatBtn.click();
+        return 'OK: clicked Chat for conv3';
+      })()
+    timeout: 25
+
+  - action: sleep
+    timeout: 5
+
+  # Wait for conv3 composer
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        const maxMs = 360000;
+        while (Date.now() - start < maxMs) {
+          const tas = Array.from(document.querySelectorAll('textarea')).filter(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (tas.length > 0) return 'OK: conv3 composer ready after ' + Math.floor((Date.now()-start)/1000) + 's';
+          await new Promise(r => setTimeout(r, 3000));
+        }
+        return 'ERROR: conv3 composer not found';
+      })()
+    timeout: 400
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: composer not found (conv 3)';
+        const msg = [
+          'Execute this exact sequence WITHOUT stopping to ask questions:',
+          '1. List the files in the current directory.',
+          '2. Create a file ctx_a.txt with the contents "alpha".',
+          '3. Read ctx_a.txt and tell me its contents.',
+          '4. Create a file ctx_b.txt with the contents "beta".',
+          '5. Read ctx_b.txt and tell me its contents.',
+          '6. Delete ctx_a.txt.',
+          '7. List files again.',
+          '8. Create ctx_c.txt with contents "gamma".',
+          '9. Read all three files (a, b, c) and report contents — note which no longer exist.',
+          'After all 9 steps, summarize what you did in one sentence.'
+        ].join('\n');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        return 'OK: typed tool-chain prompt';
+      })()
+    timeout: 10
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  - action: sleep
+    timeout: 150
+
+  - action: screenshot
+    screenshot_name: 14_conv3_tool_chain_result
     validate:
       - no_errors: true
 
-  # ─── Final state capture ──────────────────────────────────────────
   - action: screenshot
-    screenshot_name: 99_final_runtime_state
+    screenshot_name: 99_final

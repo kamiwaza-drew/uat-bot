@@ -128,7 +128,76 @@ Run `9c84e726ea5a4951b612c26a828c72e3`, started 2026-05-25T05:35:25Z, T+~8min be
 
 This is the apples-to-apples retest the prior revs needed. **The architectural-ceiling framing is debunked.** Real failure modes remaining for 0.13.1 are (a) the marketplace milvus image tag mismatch and (b) a smaller-magnitude session-persistence-under-concurrent-login flake.
 
-## 50-bot rev-4.5 result (clean cluster, UI-installed wm, distinct users — first run to reach Kaizen UI)
+## 50-bot rev-4.7 result (full scenario including agent-create + conversation phases)
+
+Run `7e5d4f6fef254a939014438503ea0dcd`, 50 distinct admin bots, scenario `workroom_kaizen_ctx` with the full agent-create wizard + conversation phases (Phases 5/6/7) enabled. **First test to actually exercise the agent-create flow at concurrent load.**
+
+### Scenario fixes that landed in rev 4.7
+
+Five separate scenario gaps had to be closed before the conversation phases could even be attempted:
+
+1. **Kaizen agent-create wizard is 5 steps, not 1**: scenario now loops Continue up to 6 times instead of trying a single Submit
+2. **Name input is bound by `<label for="">`, not placeholder match**: scenario uses label-based field discovery
+3. **Model field is a `<select>` (not text input)**: scenario picks the first `<option>` matching gpt/sonnet
+4. **Chat button is gated by `{isHovered && ...}` React conditional**: scenario dispatches `mouseenter`/`pointerenter` on the agent card so the Chat button mounts in the DOM, then clicks it
+5. **Workspace provisioning takes 2-4 minutes**: composer-wait bumped from 150s to 360s. Also Phase 6/7 "new conversation" starter navigates back to the agents list and re-clicks Chat (Kaizen v3 doesn't have a "New conversation" button)
+
+### Validation: 1-bot smoke confirmed the conversation phases work
+
+Before the 50-bot run, 1-bot smoke `5ad26d352e3642aa8813aace71780a3e` walked the entire flow end-to-end up to and including the long-context test: workroom create → kaizen deploy → enter → agent create (full 5-step wizard) → start chat → **Phase 5: long-context message + recall**. The bot successfully sent a 12KB message with an embedded "activation code 7-ZULU-MIKE-42", got the LLM's READY response, sent the recall question, got the screenshot. **Phase 5 actually works.**
+
+### 50-bot results
+
+| Stage | Reached |
+|---|---:|
+| Login + /workrooms | 33/50 |
+| Workroom + deploy | 16/50 |
+| Kaizen UI loaded | 10/50 |
+| Agent created + Chat clicked + composer textarea visible | 9/50 (**false positive** — see below) |
+| Phase 5 conv1 long-context message actually sent | **0/50** |
+| Phases 6/7 | 0/50 |
+
+### Per-worker failure breakdown
+
+| Count | Failure | Layer |
+|---:|---|---|
+| **17** | `Page.goto: Timeout 60000ms exceeded` on initial `/workrooms` nav | Frontend / forwardauth — same pattern as rev 4.5's smaller-magnitude session-drop |
+| **17** | `enter failed: 401 no access token / not authenticated` on POST `/api/workrooms/{id}/enter` | Auth-gateway under load |
+| **9** | `send_button_disabled` — bot thought it was on chat page but was actually still on agent-create wizard step 1 | **Kaizen `/api/models` endpoint can't serve 50 concurrent calls** |
+| 6 | `Create workroom button not found. Controls: [Home | Models | …]` | Landed on Kamiwaza dashboard instead of /workrooms after auth |
+| 1 | `composer not found after 360s` | Unknown — workspace provisioning never completed |
+
+### Finding #10 revised — what the "stuck composer" actually was
+
+**Rev 4.5's `composer_not_found` finding was misattributed.** The bot's composer-finder matches ANY visible textarea — including the **Instructions textarea on agent-create wizard step 1** ("How should this agent behave? (optional)"). When the wizard's Continue button stays disabled (because the Model select shows "Loading models...") AND my scenario's wizard-loop bailed when it saw the disabled button, the bot would mistakenly screenshot `08_kaizen_chat_ready` while still on the wizard. Then it'd try to click a Send button that doesn't exist, hit `submit timeout`, and error out.
+
+What we actually have at 50 concurrent bots is **the Kaizen frontend's `GET /api/models` endpoint can't serve 50 callers in parallel**. Under 50-bot load, model dropdowns stay in "Loading models..." for the full step timeout, wizards never advance, and `/conversations/{id}` is unreachable.
+
+### Finding #11 — three stacked concurrency bottlenecks at 50 bots
+
+This run cleanly separates three distinct concurrency limits in 0.13.1:
+
+1. **Frontend /workrooms render under concurrent auth load** — 17/50 Page.goto timeouts. Forwardauth round-trip on the initial nav after login serializes too slowly.
+2. **Auth gateway `POST /enter`** — 17/50 401s on the workroom-entry call after a successful deploy. Same `core-forwardauth` choke point as Finding #5, surfacing at a different request.
+3. **Kaizen `/api/models` endpoint** — 9/50 stuck on wizard step 1 because the model dropdown never finishes loading. The endpoint's response time degrades to >60s under 50 concurrent admin sessions.
+
+Cluster scheduling capacity (Finding #11 in rev 4.5) is NOT one of these bottlenecks. 307 extension pods + 159 Running + 144 Pending was sustained without a wedge, same plateau shape as rev 4.5/4.6.
+
+### What rev 4.7 unblocked
+
+- The original "context manager via 3 conversations" goal from the user's first /uat-bot request is **finally testable in single-bot mode** as of rev 4.7. Phase 5 (long-context condensation) runs cleanly at 1 bot.
+- The 50-bot conversation-phase test still doesn't run because of the three Kaizen-layer concurrency limits above. Fixing any one of them would let a portion of the 50 bots reach Phase 5. Fixing all three would let the team get end-to-end multi-conversation stress numbers.
+
+### Recommended next steps
+
+| Priority | Item | Owner |
+|---|---|---|
+| P0 | Profile Kaizen `/api/models` under N=10/20/50 concurrent calls and add response caching or horizontal-scale the kaizen backend | Kaizen team |
+| P0 | Profile `core-forwardauth` round-trip under N concurrent admin sessions (same target as rev-4.5 Finding #5; now confirmed at second surface — `/enter` returns 401) | Platform / auth team |
+| P1 | Frontend `/workrooms` render path: trace why 60s isn't enough at 50 concurrent loads | Frontend team |
+| P2 | Re-run rev 4.7 once any of P0 items lands; we'd expect 9+ bots to actually reach Phase 5 if the Kaizen models endpoint is fixed alone |
+
+## Previously: 50-bot rev-4.5 result (clean cluster, UI-installed wm, distinct users — first run to reach Kaizen UI)
 
 Run `a24213f2ebba4fc9ace81f4a20ff1dfa`, started 2026-05-25 18:11Z, T+~14min cancelled (steady-state plateau established).
 

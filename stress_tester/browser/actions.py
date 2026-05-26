@@ -137,11 +137,17 @@ WELL_KNOWN_SELECTORS: dict[str, list[str]] = {
         "[data-testid='msg-input']",
     ],
     "kaizen_send_button": [
-        "button[type='submit']",
+        # Kaizen v3 message-input.tsx renders the send button with
+        # aria-label="Send message" (or "Pause agent" when a reply is
+        # in flight). Match that first.
+        "button[aria-label='Send message']",
+        "button[aria-label*='send message' i]",
+        "button[aria-label*='send' i]:not([aria-label*='pause' i])",
         "button[data-testid='send-button']",
-        "button[aria-label*='send' i]",
-        "button[aria-label*='Send' i]",
         "button:has-text('Send')",
+        # NOTE: button[type='submit'] removed — it matched leftover form
+        # buttons (e.g., the agent-create wizard's Continue/Create button
+        # still in DOM) and caused clicks on the wrong element.
         ".send-button",
     ],
     "kaizen_new_conversation": [

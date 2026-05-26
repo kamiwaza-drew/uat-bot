@@ -22,6 +22,10 @@ class ScenarioStep:
     screenshot_name: str | None = None
     validate: list[dict[str, Any]] = field(default_factory=list)
     direction: str = "down"  # for scroll action
+    # always_run steps execute in the cleanup phase regardless of prior step failures.
+    # Used for teardown (delete workrooms/deployments) so port allocations are released
+    # back to the platform pool even when the main flow errored out.
+    always_run: bool = False
 
 
 @dataclass
@@ -57,6 +61,7 @@ def parse_scenario(raw: dict[str, Any], source_path: str | None = None) -> Scena
                 screenshot_name=step_raw.get("screenshot_name"),
                 validate=step_raw.get("validate", []),
                 direction=step_raw.get("direction", "down"),
+                always_run=step_raw.get("always_run", False),
             )
         )
 

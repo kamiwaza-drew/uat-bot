@@ -88,14 +88,23 @@ class ScenarioRunner:
             },
         )
 
-        for i, step in enumerate(self.scenario.steps):
+        # Partition steps into main flow + always-run cleanup. The cleanup
+        # block executes after the main loop regardless of whether the main
+        # flow errored — needed so test bots always tear down their
+        # workrooms/deployments via the API, releasing platform port pool
+        # allocations (the platform leaks lb_port on DEPLOYING rows that
+        # never reach a terminal state).
+        main_steps = [(i, s) for i, s in enumerate(self.scenario.steps) if not s.always_run]
+        cleanup_steps = [(i, s) for i, s in enumerate(self.scenario.steps) if s.always_run]
+
+        main_errored = False
+        for i, step in main_steps:
             if cancel_event and cancel_event.is_set():
                 break
 
             result = await self._execute_step(i, step)
             self._results.append(result)
 
-            # Emit metric
             await self.metric_sink(
                 {
                     **self.metric_context,
@@ -113,7 +122,6 @@ class ScenarioRunner:
                 }
             )
 
-            # Stop on error unless it's a validation-only failure
             if result.status == "error":
                 await self.event_sink(
                     "scenario.step_error",
@@ -124,7 +132,41 @@ class ScenarioRunner:
                         "error": result.detail,
                     },
                 )
+                main_errored = True
                 break
+
+        # Cleanup phase: run always_run steps even if main flow errored or
+        # was cancelled. Errors inside cleanup steps are recorded but never
+        # cause further short-circuit — every cleanup step gets a chance.
+        for i, step in cleanup_steps:
+            try:
+                result = await self._execute_step(i, step)
+            except Exception as exc:  # noqa: BLE001
+                result = StepResult(
+                    step_index=i,
+                    action=step.action,
+                    status="error",
+                    duration_ms=0,
+                    detail=f"cleanup exception: {exc}",
+                )
+            self._results.append(result)
+            await self.metric_sink(
+                {
+                    **self.metric_context,
+                    "run_id": self.run_id,
+                    "worker_id": self.worker_id,
+                    "scenario": self.scenario.name,
+                    "step": self._step_counter,
+                    "action": step.action,
+                    "target": step.target or step.url or "",
+                    "status": result.status,
+                    "duration_ms": result.duration_ms,
+                    "screenshot": result.screenshot or "",
+                    "detail": result.detail,
+                    "validation_failures": result.validation_failures,
+                    "phase": "cleanup",
+                }
+            )
 
         status = "completed"
         if any(r.status == "error" for r in self._results):

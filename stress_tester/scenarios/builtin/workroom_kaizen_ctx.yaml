@@ -140,23 +140,51 @@ steps:
         }
         if (!workroomId) return 'ERROR: workroom_id not found by name=' + wrName;
         window.__uat_workroom_id = workroomId;
+        // Persist across page navigations (Kaizen frontend lives on the same origin so
+        // localStorage survives the move from /workrooms → /runtime/apps/<dep>/...).
+        // The always_run cleanup at scenario end reads this back to DELETE the workroom.
+        try { localStorage.setItem('__uat_workroom_id', workroomId); } catch (e) { /* private mode */ }
         console.log('[poll] workroom_id=' + workroomId);
 
         // 2) POST to start the deploy. Response includes access_url immediately,
         // which is the deterministic /runtime/apps/<name>/ path that becomes
         // valid when the Kaizen pod is Ready. We trust this URL and let the
         // downstream wait_for kaizen_chat_input absorb the deploy latency.
-        try {
-          const createRes = await fetch(launcherBase + '/api/deployments', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ name: wrName, is_ephemeral: false, workroom_id: workroomId })
-          });
-          if (!createRes.ok) {
-            const errText = await createRes.text();
-            return 'ERROR: POST /deployments failed: ' + createRes.status + ' ' + errText.substring(0, 200);
+        // RETRY-ON-502: under 50-bot concurrency, the workroom-manager backend
+        // 502s when the extension-operator can't keep up with simultaneous KX
+        // creates. Back off and retry up to 8 times with exponential delay.
+        let createRes = null;
+        let createOk = false;
+        let lastErr = '';
+        for (let attempt = 0; attempt < 8; attempt++) {
+          // Add random jitter so 50 bots don't retry in lockstep
+          if (attempt > 0) {
+            const delayMs = Math.min(60000, 5000 * Math.pow(1.6, attempt - 1)) + Math.random() * 5000;
+            console.log('[deploy retry] attempt=' + (attempt+1) + ' after ' + Math.round(delayMs) + 'ms (last=' + lastErr + ')');
+            await new Promise(r => setTimeout(r, delayMs));
           }
+          try {
+            createRes = await fetch(launcherBase + '/api/deployments', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ name: wrName, is_ephemeral: false, workroom_id: workroomId })
+            });
+            if (createRes.ok) { createOk = true; break; }
+            const errText = await createRes.text();
+            lastErr = createRes.status + ' ' + errText.substring(0, 80);
+            // Only retry on transient errors (502, 503, 504, 429)
+            if (![502, 503, 504, 429].includes(createRes.status)) {
+              return 'ERROR: POST /deployments failed (non-retryable): ' + lastErr;
+            }
+          } catch (e) {
+            lastErr = 'fetch_error: ' + (e.message || e);
+          }
+        }
+        if (!createOk) {
+          return 'ERROR: POST /deployments failed after 8 retries. last=' + lastErr;
+        }
+        try {
           const created = await createRes.json();
           const deploymentId = created.id;
           const deploymentName = created.name;
@@ -613,6 +641,10 @@ steps:
     screenshot_name: 08_kaizen_chat_ready
 
   # ─── Phase 5: Conversation 1 — Long-context condensation ──────────
+  # Type long message AND click send within the same js_eval, so we don't
+  # race the React render cycle (the send button is disabled until canSend
+  # flips, and the separate click action sometimes evaluates before React
+  # has re-rendered the now-enabled button into a clickable state).
   - action: js_eval
     value: |
       (async () => {
@@ -628,13 +660,19 @@ steps:
         const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
         setter.call(composer, msg);
         composer.dispatchEvent(new Event('input', { bubbles: true }));
-        return 'OK: typed long message (' + msg.length + ' chars)';
-      })()
-    timeout: 10
 
-  - action: click
-    target: kaizen_send_button
-    timeout: 10
+        // Wait for React to re-render the send button into the enabled state
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          const sendBtn = document.querySelector('button[aria-label="Send message"]');
+          if (sendBtn && !sendBtn.disabled) {
+            sendBtn.click();
+            return 'OK: typed ' + msg.length + ' chars + clicked Send after ' + (i*100) + 'ms';
+          }
+        }
+        return 'ERROR: Send button never became enabled (msg typed, but button stayed disabled)';
+      })()
+    timeout: 15
 
   - action: sleep
     timeout: 60
@@ -642,13 +680,28 @@ steps:
   - action: screenshot
     screenshot_name: 09_conv1_after_long
 
-  - action: fill
-    target: kaizen_chat_input
-    value: "What was the activation code I mentioned at the very beginning of this conversation? Respond with just the code, no other text."
-
-  - action: click
-    target: kaizen_send_button
-    timeout: 10
+  # Same combined fill+send pattern for recall message
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: composer not found for recall';
+        const msg = "What was the activation code I mentioned at the very beginning of this conversation? Respond with just the code, no other text.";
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          const sendBtn = document.querySelector('button[aria-label="Send message"]');
+          if (sendBtn && !sendBtn.disabled) {
+            sendBtn.click();
+            return 'OK: recall typed + sent after ' + (i*100) + 'ms';
+          }
+        }
+        return 'ERROR: send button disabled for recall';
+      })()
+    timeout: 15
 
   - action: sleep
     timeout: 40
@@ -974,3 +1027,49 @@ steps:
 
   - action: screenshot
     screenshot_name: 99_final
+
+  # ─── Cleanup (always_run) ────────────────────────────────────────
+  # Tear down the workroom this bot created via the wm-backend DELETE
+  # endpoint. Cascades to extension cleanup inside kamiwaza-core, which
+  # invokes app_service.stop_deployment → _release_reserved_port and
+  # frees the lb_port reservation in app_deployments. Without this,
+  # the platform's 200-port allocation pool (kamiwaza/serving/portallocator.py)
+  # leaks one port per bot iteration and eventually all deploy_app POSTs
+  # return HTTP 500 → bot sees 502 from wm-backend → retry storm. See
+  # uat-bot/load-test-report-0.13.1.md rev 4.13.
+  #
+  # always_run=true so this fires regardless of whether the bot succeeded
+  # through Phase 7 or errored out somewhere in Phase 2-6.
+  - action: js_eval
+    always_run: true
+    value: |
+      (async () => {
+        // Recover the workroom id even after the bot navigated to the Kaizen frontend
+        // (which wiped the original window.__uat_workroom_id global). Phase 1 mirrors
+        // the id into localStorage on the same origin, so the value survives.
+        let wrId = window.__uat_workroom_id;
+        if (!wrId) {
+          try { wrId = localStorage.getItem('__uat_workroom_id'); } catch (e) {}
+        }
+        if (!wrId) return 'SKIP: no workroom_id found in window or localStorage (bot never reached Phase 2)';
+        try { localStorage.removeItem('__uat_workroom_id'); } catch (e) {}
+        try {
+          const res = await fetch('/workrooms/api/workrooms/' + wrId, {
+            method: 'DELETE',
+            credentials: 'include',
+            headers: { 'Accept': 'application/json' },
+          });
+          if (res.ok || res.status === 404) {
+            return 'OK: DELETE workroom ' + wrId + ' → ' + res.status;
+          }
+          const body = await res.text();
+          return 'WARN: DELETE workroom ' + wrId + ' → ' + res.status + ' ' + body.substring(0, 200);
+        } catch (e) {
+          return 'WARN: DELETE workroom ' + wrId + ' threw: ' + e.message;
+        }
+      })()
+    timeout: 60
+
+  - action: screenshot
+    always_run: true
+    screenshot_name: 100_cleanup_done

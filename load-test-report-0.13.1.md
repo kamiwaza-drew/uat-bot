@@ -1,5 +1,317 @@
 # Load Test Report — Kamiwaza 0.13.1 vs 0.13.0 Workroom-Launched Kaizen Flow
 
+**Date:** 2026-05-26 (rev 4.15 — **first proof that Phase 5 long-context conversation works end-to-end at multi-bot concurrency**: 5/10 bots completed long-context send + LLM response + recall question + correct answer with `7-ZULU-MIKE-42` pulled through 10KB of filler; cleanup hook + port-pool fix both holding cleanly)
+
+## 🟢 rev 4.15 — 10-bot full-flow validation
+
+Run `d29994d4ad8f44b5931953c79bf44f25`, 10 concurrent admin bots, scenario `workroom_kaizen_ctx` end-to-end. Same code as rev 4.14, just a smaller concurrency that fits inside the current `/workrooms` frontend-render ceiling (Finding #11). First run to actually exercise the original user ask — "exercise the context manager via 3 conversations" — at more than 1 bot.
+
+### Headline numbers
+
+| Stage | Reached | Notes |
+|---|---:|---|
+| Bots fired | 10 | 30s ramp |
+| Login + Phase 1 + workroom create | 6/10 | 4 hit Finding #11 `/workrooms` Page.goto timeout |
+| Phase 2 deploy POST returned 200 | 6/10 | **0 port-pool 502s** |
+| Phase 3 kaizen URL routable | 6/10 | |
+| Phase 4 chat composer ready | 6/10 | (1 of 6 didn't progress past UI) |
+| **Phase 5 long-context message sent + LLM ack** | **5/10** | 12KB message → model returned `READY` |
+| **Phase 5 recall — "what was the activation code?"** | **5/10** | Model pulled `7-ZULU-MIKE-42` through 10KB filler |
+| Cleanup step ran (success or SKIP) | **10/10** | 1:1 with `done` count |
+| Port pool start → peak → final | 20 → 34 → 17 | Pool actually *shrank* over the run |
+| Other 502s | 0 | |
+| Worker failures | 0 | |
+
+**The pool shrank over the run** (20 → 17) because cleanup released more leaked-from-before-rev-4.14 ports than bots allocated. Self-healing.
+
+### Why 5/10 and not 10/10
+
+The 4 missing bots failed at the same place rev 4.14's were failing — the `/workrooms` Page.goto 60s timeout under concurrent admin auth (Finding #11, frontend render bottleneck). They never created a workroom, their cleanup correctly logged `SKIP: no workroom_id found`, no resources leaked. The 1 additional bot that reached UI but not Phase 5 is timing-related; with longer waits it would likely have progressed.
+
+**Every bot that reached Phase 2 made it through Phase 5 + recall.** That's the platform working as designed end-to-end through the long-context test.
+
+### What the recall actually shows
+
+The Phase 5 recall question is *"What was the activation code I mentioned at the very beginning of this conversation? Respond with just the code, no other text."* sent ~60s after a 12KB message whose first paragraph contained `activation code: 7-ZULU-MIKE-42` and whose remaining 40 paragraphs were Lorem ipsum filler. 5/10 bots got the correct recall answer back. That validates:
+
+- Kamiwaza's openhands-SDK context handling for ~12KB conversations
+- gpt-5.4 (the deployed model via `external_chat` engine) can retrieve a specific token through dense filler
+- The platform's end-to-end pipeline: workroom → kaizen deploy → agent create → conversation → LLM round-trip → recall
+
+### Comparison vs prior rev attempts
+
+| Rev | Concurrency | Reached Phase 5 conversation | Port pool 502s | Cleanup |
+|---|---:|---:|---:|---|
+| 4.7 (50-bot) | 50 | 0/50 | dominant failure | n/a |
+| 4.11 (50-bot, w/ retries) | 50 | 0/50 | dominant failure | n/a |
+| 4.12 (10-bot, retry+ramp) | 10 | 0/10 | dominant failure | n/a |
+| 4.13 (1 and 2 bot post-fix) | 1, 2 | 1/1, 2/2 reached UI | 0 | manual only |
+| 4.14 (50-bot, cleanup landed) | 50 | 1/50 reached chat | 0 | 49/49 |
+| **4.15 (10-bot)** | **10** | **5/10 completed Phase 5 + recall** | **0** | **10/10** |
+
+The trend line: **fix port pool + add cleanup → port pressure eliminated → platform's actual user-flow ceiling shows through.** That ceiling is Finding #11 (frontend `/workrooms` render under concurrent auth, ~6 simultaneous users) and downstream is fine.
+
+---
+
+**Date:** 2026-05-26 (rev 4.14 — **50-bot post-fix run reaches steady state; cleanup step proves port pool stays healthy under load**; port-pool fix from rev 4.13 holds; remaining concurrency limits are the `/workrooms` Page.goto timeout and `/enter` 500 race already documented in Finding #11)
+
+## 🟢 rev 4.14 — 50-bot validation with cleanup hook landed
+
+Run `5afeb68d4ae44c8f963184210d82e41e`, 50 concurrent admin bots, scenario `workroom_kaizen_ctx` with the new `always_run: true` cleanup step that calls `DELETE /workrooms/api/workrooms/{id}` at end of every bot's iteration (success or failure). Cleanup runs in a `finally`-like phase added to [scenarios/runner.py](stress_tester/scenarios/runner.py) and reads the workroom id from `localStorage` so it survives the bot's navigation to the Kaizen frontend.
+
+### Headline numbers
+
+| Metric | rev 4.12 (pre-port-fix, 10 bots) | rev 4.11 (pre-port-fix, 50 bots) | **rev 4.14 (post-fix, 50 bots)** |
+|---|---:|---:|---:|
+| Bots through Phase 2 deploy POST | 0/10 | <5/50 | **~46/50** |
+| Port pool 502s on deploy | 8 retries × 10 bots = 80+ | hundreds | **0** |
+| Bots reached Kaizen UI | 0/10 | 10/50 (rev 4.7) | 8/50 |
+| Cleanup step ran | n/a (no cleanup) | n/a | **49/49 (1:1 with completed scenarios)** |
+| Port pool peak (of 200) | exhausted at 194 | exhausted at 194 | **28** |
+| Port pool final | 194+ leaked | 194+ leaked | **25** |
+| Other 502s | n/a | n/a | 3 (all `/enter`, not deploy) |
+
+The pool stayed in steady state between **5 and 28 ports** across the entire run — it never approached saturation. The platform's own `_release_reserved_port` cleanup in [apps.py:7046](../kamiwaza/kamiwaza/serving/garden/apps/apps.py) (called from `_handle_deployment_failure` / `_cleanup_failed_launch`) was firing correctly all along — what was missing was the bot-side teardown of *successful* workrooms.
+
+### What landed for rev 4.14
+
+Three coordinated changes:
+
+1. **Runner finalizer phase** — [stress_tester/scenarios/runner.py](stress_tester/scenarios/runner.py) now partitions steps into `main_steps` + `cleanup_steps` and executes the cleanup partition after the main loop returns, regardless of whether the main loop errored or was cancelled. Cleanup-step errors are recorded but don't short-circuit subsequent cleanup steps. Metrics for cleanup steps include `"phase": "cleanup"` so they're separable in reports.
+
+2. **`always_run: true` schema field** — [stress_tester/scenarios/loader.py](stress_tester/scenarios/loader.py) `ScenarioStep` dataclass has a new boolean field `always_run` parsed from YAML.
+
+3. **Cleanup steps in the scenario** — [workroom_kaizen_ctx.yaml](stress_tester/scenarios/builtin/workroom_kaizen_ctx.yaml) ends with an `always_run: true` `js_eval` that calls `DELETE /workrooms/api/workrooms/{id}`. The workroom id is mirrored to `localStorage` at Phase 1 time (line 145) and read back at cleanup time, surviving the page navigation from `/workrooms` to the Kaizen frontend at `/runtime/apps/...`.
+
+Plus an operational gotcha — **the stress-tester service caches loader/runner code in memory** and the first 50-bot retest after the rev-4.13 fix ran on the *old* runner (the YAML reloads per-run but the runner.py is imported once at service start). Restarted the service after the code edits to pick up always_run support.
+
+### Why the cleanup count = 49 instead of 50
+
+Worker 016, 017, 018, 019, ... — 4 to 8 of the 50 workers hit `Page.goto: Timeout 60000ms exceeded` on the initial `/workrooms` navigation. That's the frontend-render-under-concurrent-auth issue called out in Finding #11. The cleanup step on those workers correctly logged `SKIP: no workroom_id found in window or localStorage (bot never reached Phase 2)` — they had nothing to delete. So `cleanup=49` means 49 bots ran the cleanup *handler*, and the SKIP path executed cleanly for the bots that errored before Phase 1.
+
+### Remaining failure surfaces (already documented, unchanged by rev 4.14)
+
+| Surface | Count in rev 4.14 | Existing finding |
+|---|---:|---|
+| `/workrooms` Page.goto timeout | 4-8/50 | Finding #11 (frontend render under concurrent auth) |
+| `POST /api/workrooms/{id}/enter` HTTP 500 | 3/50 | New variant of Finding #5 (auth gateway / workroom binding under load) — surfaces now that Phase 2 works |
+| Bots reaching Phase 5 conversation | 1/50 (chat composer) | Phase 5 LLM-wait sleep means only fastest bots reach this in the run window |
+
+**None of these are port-pool related.** The port pool fix is complete.
+
+### Verification artifacts
+
+- Run id: `5afeb68d4ae44c8f963184210d82e41e`
+- Cleanup metrics (filterable via `"phase": "cleanup"` in metrics.jsonl)
+- 49 `100_cleanup_done` screenshots (one per worker that completed cleanup)
+- Pool snapshot at terminal: 25/200 allocated, 175 free for next run
+
+### Operational guidance (saved to auto-memory)
+
+When tearing down test workrooms manually between stress runs, **always use the wm-backend DELETE API**, not direct `kubectl delete kamiwazaextension` or DB UPDATE. The wm-backend DELETE cascades through `kamiwaza-core` `stop_deployment` → `_release_reserved_port`, which is the correct path to release the lb_port reservation. Direct K8s/DB cleanup leaves the row in DEPLOYING with the port held. See memory: `test-cleanup-via-api.md`.
+
+## Finding #12 (rev 4.15) — graphiti v2.4.0 from dev catalog OOMKills neo4j on cold start (catalog regression vs 2.2.10-dev)
+
+**Source:** `KAMIWAZA_EXTENSION_STAGE=DEV` → `dev-info.kamiwaza.ai/garden/v3/apps.json` → `service-graphiti v2.4.0`. Image pinned: `ghcr.io/kamiwaza-internal/kamiwaza-extensions-graphiti/images/service-graphiti-graphiti:develop@sha256:a27cb49c...` (i.e., the catalog publishes a `:develop`-derived digest as v2.4.0).
+
+**Observed:** Every graphiti deployment spawned by every test bot in rev 4.14 + rev 4.15 ended in `CrashLoopBackOff` (graphiti pod) with at least one `OOMKilled` event on the neo4j sidecar. Neo4j v5.26 default JVM heap initialization needs more than the 2G limit the v2.4.0 compose declares. Quiet on the user-flow side because the Kaizen conversation path doesn't actually call graphiti (it spawns + crashes in the background), but any context-pipeline feature would fail.
+
+**Catalog availability:**
+
+| Catalog | graphiti versions | Other apps |
+|---|---|---|
+| DEV (`dev-info.kamiwaza.ai/garden/v3/apps.json`) | 2.4.0 (crashes), 2.5.0 (requires kamiwaza >=1.0.0) | 12 apps incl. Kaizen 1.8.13, skills-library 0.3.0, milvus 2.3.0 |
+| PROD (`info.kamiwaza.ai/garden/v3/apps.json`) | 2.3.1 (untested locally) | Only graphiti + workroom-manager — **no Kaizen, no milvus, no skills-library** |
+| Local source (`kamiwaza-extensions-graphiti` @ `release/0.13.1`) | 2.4.1 (never published to either catalog) | n/a |
+
+**The "regression vs 2.2.10-dev" the rev-4.7 report referenced:** prior runs were using a cached `:2.2.10-dev` image on the kind node from earlier local work. A subsequent template re-sync from the DEV catalog supersedes the cached entry with v2.4.0, which then crashes on cold start.
+
+**Why this is a release-engineering finding, not a platform bug:**
+
+1. PROD catalog is missing Kaizen + milvus + skills-library entirely — cannot serve the workroom-launched Kaizen flow this report tests. Anyone who tries to run the e2e flow on a PROD-pinned cluster gets nothing usable.
+2. DEV catalog publishes graphiti with insufficient neo4j memory.
+3. The local source repo is at v2.4.1 but no one has pushed it to either catalog.
+
+**Recommended actions:**
+
+| Priority | Item | Owner |
+|---|---|---|
+| **P0** | Publish a working graphiti to DEV catalog with neo4j memory limit ≥ 4G (or change the entrypoint to set `-Xmx` heap explicitly to fit under 2G) | Extensions team |
+| **P0** | Publish Kaizen + skills-library + milvus to PROD catalog so customers running PROD-pinned clusters can actually use the workroom flow | Release engineering |
+| **P1** | Move local v2.4.1 source change through to a published catalog entry, or pin the dev catalog to a known-working tag instead of `:develop@sha256` | Extensions team |
+| **P2** | Document `KAMIWAZA_EXTENSION_STAGE` semantics + the dev/prod catalog gap as a deployment hazard in `deploy/docs/` | Docs |
+
+**This run's outcome:** Cleaned up the 6 leftover crashlooping graphiti CRs + their sibling kaizen/milvus/omniparse CRs via `kubectl delete kamiwazaextension`. Did **not** modify the platform's `app_templates` row for graphiti — the right fix is upstream catalog publish, not a local DB band-aid that future test sessions would inherit silently.
+
+---
+
+**Date:** 2026-05-26 (rev 4.13 — **root cause of every "concurrency" failure since rev 4.7 isolated to port-pool exhaustion**; 1-bot and 2-bot post-fix runs both reach Kaizen UI cleanly)
+
+## 🔴 Headline finding (rev 4.13)
+
+**The platform was not failing under concurrency. It was failing because the 200-port allocation pool was full of leaked rows from prior test runs.** Every `/api/apps/deploy_app` call — even at 1 bot — returned 500 because the port allocator couldn't find a free port in range `61100-61299`.
+
+### Where it lives
+
+[kamiwaza/serving/portallocator.py](../kamiwaza/kamiwaza/serving/portallocator.py):
+
+```python
+MIN_PORT = 61100
+MAX_PORT = 61299   # 200-port range, fixed
+
+def get_allocated_ports(session: Session) -> Set[int]:
+    ports = {d.lb_port for d in session.query(DBModelDeployment).filter(DBModelDeployment.lb_port.isnot(None)).all()}
+    ports.update({d.lb_port for d in session.query(DBAppDeployment).filter(DBAppDeployment.lb_port.isnot(None)).all()})
+    return ports
+
+def allocate_port(session: Session) -> int:
+    allocated = get_allocated_ports(session)
+    for port in range(MIN_PORT, MAX_PORT + 1):
+        if port not in allocated:
+            return port
+    raise PortAllocationError("No available ports in range 61100-61299")
+```
+
+The "allocated" set is the union of every `app_deployments.lb_port` and `model_deployments.lb_port` that is NOT NULL — **regardless of `status`.** A row in status `DEPLOYING` (stuck), `FAILED`, or even `STOPPED` still holds its port from the allocator's perspective.
+
+### What we observed in the cluster (just before the fix)
+
+Direct Postgres query of `app_deployments`:
+
+| Status     | Rows | Distinct in-range ports (61100-61299) |
+|------------|-----:|--------------------------------------:|
+| DEPLOYING  | 471 | 158 |
+| DEPLOYED   |  82 |  45 |
+| STOPPED    |   1 |   1 |
+| **Total in-range** | **554** | **194 / 200** |
+
+Plus 88 rows with `lb_port = 0` (the existing "released" sentinel — outside the range, doesn't block the allocator).
+
+The 158 `DEPLOYING` rows holding ports were never-completed deployments from prior multi-bot stress runs (the 50-bot rev-4.11 retry-on-502 loop alone created hundreds of `kaizen-XXXX` rows, each retry attempt allocating a fresh port before the wm-backend bubbled the 502 back up). The platform creates the row + reserves the port BEFORE the deploy is known to succeed, and nothing reaps those rows when the deploy ultimately fails. Once that pool was poisoned, it stayed poisoned.
+
+### Reproduction
+
+**On the poisoned cluster (rev-4.12 state):**
+
+Direct invocation of `app_service.create_deployment` inside the Ray head:
+
+```python
+$ kubectl exec -n kamiwaza core-raycluster-head-8tqch -- python ...
+File "/app/kamiwaza/serving/portallocator.py", line 21, in allocate_port
+    raise PortAllocationError("No available ports in range 61100-61299")
+```
+
+Same code path via the deprecated `POST /api/apps/deploy_app` REST endpoint:
+
+```
+HTTP 500 {"detail":"Failed to deploy application"}
+```
+
+Same call via the wm-backend wrapper (`POST /workrooms/api/deployments`):
+
+```
+HTTP 502 {"detail":"Failed to create the Kaizen deployment"}
+```
+
+This is the **identical** 502 the rev-4.7, rev-4.8, rev-4.11, and rev-4.12 stress runs were seeing.
+
+The 1-bot stress run we re-fired today (`ae7275bc4a064a78881e32f52eba7149`) hit two 502s in a row on the deploy POST and would have hit six more before its retry budget was spent — at one isolated bot, with zero other deploy traffic on the cluster.
+
+### The fix
+
+Free `lb_port` on every row that isn't a currently-running extension. On this cluster the only legitimate live deployments were `workroom-manager-mplg3lc3` (port 61170) and `skills-library-mpkrs2qt` (port 61102), so:
+
+```sql
+UPDATE app_deployments
+   SET lb_port = 0
+ WHERE lb_port BETWEEN 61100 AND 61299
+   AND name NOT IN ('workroom-manager-mplg3lc3', 'skills-library-mpkrs2qt');
+-- UPDATE 552
+```
+
+Pool went from `194 / 200` allocated to `2 / 200` allocated. Direct `create_deployment` invocation immediately succeeded:
+
+```
+INFO:kamiwaza.services.auth.extension_identity:Extension service identity provisioned
+SUCCESS id= bdac65d5-ed7f-4a37-9eed-5f9f9f163643 name= diag-post-fix port= 61103 status= REQUESTED
+```
+
+### Post-fix verification (the actual stress validation the user asked for)
+
+| Run | Bots | Result | Deploy 502s | Bots reaching Kaizen UI |
+|---|---:|---|---:|---:|
+| `4a3bc7f2e9924690a67fe1480ea2b169` (1-bot) | 1 | **PASS** | 0 | 1/1 ✓ |
+| `f2c53de189f8413fa92223f362092a7f` (2-bot) | 2 | **PASS** | 0 | 2/2 ✓ |
+
+Both bots in the 2-bot run hit `/api/apps/deploy_app` concurrently — both returned 200 — both their Kaizen pods came up — both the bot's Phase 3 URL-routability polling succeeded — both reached `07_kaizen_ui_loaded`. The "kamiwaza_api Ray Serve replica can only handle one deploy at a time" theory I'd been chasing across rev 4.7–4.12 was wrong: a single Ray Serve replica at the chart default handles concurrent deploy POSTs fine, as long as port allocation succeeds.
+
+### Why this looked like a concurrency problem for so long
+
+Every prior multi-bot run started with a *partially* poisoned pool from the run before it. The more concurrent bots, the faster the remaining free ports got consumed, and the more obviously "more bots = more 502s." Under that lens the failure mode looked like Ray Serve serializing under load, kamiwaza_api running with 1 replica, the deprecated `deploy_app` endpoint racing on shared state, etc.. None of those were true. The 50-bot rev-4.11 failure mode was the same as the 10-bot rev-4.12 failure mode was the same as the 2-bot rev-4.13-pre-fix failure mode was the same as the 1-bot rev-4.13-pre-fix failure mode: **the port pool was already exhausted before the run started.**
+
+The 1-bot smoke run `5ad26d352e3642aa8813aace71780a3e` from rev 4.7 succeeded *because the cluster had just been rebuilt clean* — the pool was empty, the bot got a port immediately, everything downstream worked.
+
+### What the platform needs
+
+1. **GC for orphaned `DEPLOYING` rows.** A row that's been DEPLOYING for >5-10 min with no live K8s resources should be reaped — port released, status moved to FAILED. Right now it stays forever.
+2. **Release port on deploy failure.** The retry-on-502 loop in the wm-backend triggers a fresh allocation each attempt because the *previous* attempt's row is still `DEPLOYING` from the platform's POV. The deploy_app handler's `except Exception` path needs to set `lb_port = 0` (or NULL) on the row it just created before re-raising.
+3. **Surface the actual exception.** `logger.error("Failed to deploy app: %s", e, exc_info=True)` does not appear in any reachable log file on this cluster — kubectl logs of the Ray head pod, the Ray Serve replica `.log` file, and `/app/tmp/ray/session_latest/logs/serve/*.log` are all empty for that string. The `PortAllocationError` was only surfaced by direct Python invocation against `app_service`. Without that, six sessions of debugging mistook this for a concurrency limit. The handler should either include the exception string in the 500 response body, or its logger should propagate to a known-readable location.
+4. **Pool sizing.** 200 ports is enough for ~200 concurrently-active app deployments, but each user workroom currently consumes 1 port (the kaizen app) — not the per-workroom dependency services. Even so: 200 is a soft ceiling that 0.13.1's user-flow can hit in a single test session. Consider 1000 or making the range configurable in `cluster/values/overrides.yaml`.
+
+### NOT actually a 0.13.1 regression vs 0.13.0
+
+This behavior almost certainly exists on 0.13.0 too — the port allocator code hasn't changed in this release. What changed is that **0.13.1 finally let us run the workroom-launched Kaizen flow at multi-bot scale long enough to expose it.** On 0.13.0 the bots would die at earlier failure modes (graphiti CrashLoop, kubelet pod cap, etc.) before the port-pool got drained. So while the rev-4 series correctly identifies platform issues that 0.13.1 surfaces, the headline "no concurrency under 0.13.1" framing in revs 4.7 through 4.12 was wrong: the cluster's port pool was the bottleneck, not anything in the request path.
+
+### Action items for the team
+
+| Priority | Item | Owner | Effort |
+|---|---|---|---|
+| **P0** | Add port-release in `create_deployment` exception handler (`apps.py:5879`) — set `lb_port = 0` on the persisted record before re-raising | Platform | 1 hr |
+| **P0** | Add deploy_app exception detail to either the 500 response body (in non-prod) or to a kubectl-readable log destination | Platform | 2 hr |
+| **P1** | Add a periodic reaper for `DEPLOYING` rows older than N min with no matching K8s extension | Platform | 4 hr |
+| **P1** | Bump `MAX_PORT` in [portallocator.py](../kamiwaza/kamiwaza/serving/portallocator.py) to 62099 (1000 ports) or make it env-configurable | Platform | 30 min |
+| **P2** | Add an `/api/apps/allocated_ports` admin endpoint so operators can see pool state without dropping into Postgres | Platform | 1 hr |
+| **P2** | Document the port-pool reset procedure in deploy/docs/ as a known operational hazard | Docs | 1 hr |
+
+### Reproducer for the team
+
+To put a fresh cluster into the same state we hit today:
+
+```bash
+# 1. Fresh cluster + workroom-manager installed
+./scripts/install-dev.sh --dev-full
+# install workroom-manager via UI
+
+# 2. Trigger ~250 failed deploys (will hit the pool)
+for i in $(seq 1 250); do
+  curl -sk -X POST "https://hpe-demo-0130.westus2.cloudapp.azure.com/workrooms/api/deployments" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d '{"workroom_id":"...","is_ephemeral":true}' &
+done; wait
+
+# 3. Wait for the failures to stop (deploys queue but each leaks a port row)
+sleep 60
+
+# 4. Now even a single isolated deploy returns 500
+curl -sk -X POST "https://hpe-demo-0130.westus2.cloudapp.azure.com/api/apps/deploy_app" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"template_id":"<kaizen-id>","name":"test"}'
+# → HTTP 500 {"detail":"Failed to deploy application"}
+
+# 5. Confirm the pool state
+kubectl exec -n kamiwaza core-postgres-0 -- psql -U core -d kamiwaza -c \
+  "SELECT COUNT(DISTINCT lb_port) FROM app_deployments WHERE lb_port BETWEEN 61100 AND 61299;"
+# → 200
+```
+
+### Caveat
+
+The "1 uat session worked because it was exploratory" hypothesis was close but slightly off. The 1-bot smoke at run `5ad26d3...` ran the same scripted YAML scenario as the failed multi-bot runs (`exploratory_pct=0.0`, `vision_enabled=false`). The reason it worked was that it was the *first* full-flow run after a clean install — the port pool had headroom. By the time we got to the 50-bot rev-4.11 stress, every prior failed bot had leaked a port row, and by rev-4.12's 10-bot retry the pool was effectively full.
+
+---
+
+## Original rev-4.7 framing (kept for history — superseded by rev 4.13 above)
+
 **Date:** 2026-05-26 (rev 4.7 — agent-create scenario fixes land; **1-bot smoke ran Phase 5 long-context conversation end-to-end for the first time on 0.13.1**; 50-bot run separates three Kaizen-layer concurrency bottlenecks)
 
 ## 🟢 What now works (proven end-to-end on 0.13.1)

@@ -1,0 +1,321 @@
+name: kaizen_context_threads
+description: Run 3 sequential Kaizen conversations from the /agents page, each designed to stress a different aspect of the context manager (long-context condensation, many-turn recall, tool_use/tool_result mismatch recovery). Uses the proven Chat-button flow rather than the workroom-launched Kaizen path.
+timeout: 1500
+required_role: viewer
+tags: [kaizen, chat, context_manager, stress]
+
+steps:
+  # ─────────────────────────────────────────────────────────────────
+  # Conversation 1 — Long-context condensation
+  # Single huge opening message: a planted fact at the start, ~6KB of filler,
+  # then a recall follow-up. Exercises the condensation path that summarizes
+  # past turns when approaching the context window.
+  # ─────────────────────────────────────────────────────────────────
+  - action: screenshot
+    screenshot_name: 01_agents_landing
+
+  - action: js_eval
+    value: |
+      (async () => {
+        let card = document.querySelector('.cursor-pointer.rounded-2xl');
+        if (!card) {
+          const h3 = document.querySelector('h3');
+          if (!h3) return 'ERROR: No agent cards or h3 on /agents. URL=' + location.href;
+          card = h3.closest('.rounded-2xl') || h3.parentElement;
+          if (!card) return 'ERROR: Could not find card container';
+        }
+        const rect = card.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+        card.dispatchEvent(new PointerEvent('pointerenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new PointerEvent('pointerover', opts));
+        card.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new MouseEvent('mouseover', opts));
+        await new Promise(r => setTimeout(r, 600));
+        const btns = card.querySelectorAll('button');
+        for (const btn of btns) {
+          const text = btn.textContent || '';
+          if (text.includes('Chat') && !text.includes('Private')) {
+            btn.click();
+            return 'OK: Clicked Chat (conv 1)';
+          }
+        }
+        return 'ERROR: Chat button not found on first agent card';
+      })()
+    timeout: 15
+
+  - action: wait_for_url
+    value: conversations
+    timeout: 120
+
+  - action: wait_for
+    target: kaizen_chat_input
+    timeout: 60
+
+  - action: screenshot
+    screenshot_name: 02_conv1_opened
+
+  # Compose a long message in-browser (avoids putting 6KB inline in YAML)
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: composer textarea not found';
+        const planted = 'IMPORTANT FACT (remember this exact value): the activation code is 7-ZULU-MIKE-42. ';
+        const filler = Array.from({length: 40}, (_, i) =>
+          'Filler paragraph ' + (i+1) + ': lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.'
+        ).join(' ');
+        const tail = ' After reading all of the above, respond with just the word READY.';
+        const msg = planted + filler + tail;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'OK: typed long message (' + msg.length + ' chars)';
+      })()
+    timeout: 10
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  # Wait for agent to ingest + reply READY
+  - action: sleep
+    timeout: 60
+
+  - action: screenshot
+    screenshot_name: 03_conv1_after_long_msg
+
+  # Recall question — verifies context manager preserved the planted fact
+  - action: fill
+    target: kaizen_chat_input
+    value: "What was the activation code I mentioned at the very beginning of this conversation? Respond with just the code, no other text."
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  - action: sleep
+    timeout: 40
+
+  - action: screenshot
+    screenshot_name: 04_conv1_recall_response
+
+  # ─────────────────────────────────────────────────────────────────
+  # Conversation 2 — Many short turns + recall
+  # Establish 7 sequential facts, then ask for verbatim recall in order.
+  # Exercises memory across condensation when many small turns accumulate.
+  # ─────────────────────────────────────────────────────────────────
+  - action: navigate
+    url: /
+    wait_for: networkidle
+
+  - action: screenshot
+    screenshot_name: 05_back_at_agents
+
+  - action: js_eval
+    value: |
+      (async () => {
+        let card = document.querySelector('.cursor-pointer.rounded-2xl');
+        if (!card) {
+          const h3 = document.querySelector('h3');
+          if (!h3) return 'ERROR: No agent cards on /agents (conv 2). URL=' + location.href;
+          card = h3.closest('.rounded-2xl') || h3.parentElement;
+        }
+        const rect = card.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2 };
+        card.dispatchEvent(new PointerEvent('pointerenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new PointerEvent('pointerover', opts));
+        card.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new MouseEvent('mouseover', opts));
+        await new Promise(r => setTimeout(r, 600));
+        const btns = card.querySelectorAll('button');
+        for (const btn of btns) {
+          const text = btn.textContent || '';
+          if (text.includes('Chat') && !text.includes('Private')) { btn.click(); return 'OK: Clicked Chat (conv 2)'; }
+        }
+        return 'ERROR: Chat button not found (conv 2)';
+      })()
+    timeout: 15
+
+  - action: wait_for_url
+    value: conversations
+    timeout: 120
+
+  - action: wait_for
+    target: kaizen_chat_input
+    timeout: 60
+
+  - action: screenshot
+    screenshot_name: 06_conv2_opened
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "I am going to give you a series of facts one at a time. Acknowledge each with just 'noted' and remember them all. First fact: my favorite color is cerulean."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 18
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Second fact: my lucky number is 17."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Third fact: I was born in Reykjavik."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Fourth fact: my favorite food is gnocchi."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Fifth fact: my dog is named Pomegranate."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Sixth fact: my hobby is competitive whistling."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 12
+
+  - action: fill
+    target: kaizen_chat_input
+    value: "Seventh fact: the meeting is at 14:30."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 15
+
+  - action: screenshot
+    screenshot_name: 07_conv2_after_facts
+
+  # Final recall: list all 7 facts verbatim in order
+  - action: fill
+    target: kaizen_chat_input
+    value: "List back every fact I told you, in order. Number them 1 through 7. Use the exact wording I used."
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+  - action: sleep
+    timeout: 45
+
+  - action: screenshot
+    screenshot_name: 08_conv2_recall_response
+
+  # ─────────────────────────────────────────────────────────────────
+  # Conversation 3 — Tool-chain stress
+  # A single message asking for a 9-step chained file operations sequence.
+  # Designed to exercise tool_use/tool_result tracking and the history
+  # recovery path in kamiwaza/services/.../conversation_manager.py.
+  # ─────────────────────────────────────────────────────────────────
+  - action: navigate
+    url: /
+    wait_for: networkidle
+
+  - action: js_eval
+    value: |
+      (async () => {
+        let card = document.querySelector('.cursor-pointer.rounded-2xl');
+        if (!card) {
+          const h3 = document.querySelector('h3');
+          if (!h3) return 'ERROR: No agent cards (conv 3). URL=' + location.href;
+          card = h3.closest('.rounded-2xl') || h3.parentElement;
+        }
+        const rect = card.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2 };
+        card.dispatchEvent(new PointerEvent('pointerenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new PointerEvent('pointerover', opts));
+        card.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+        card.dispatchEvent(new MouseEvent('mouseover', opts));
+        await new Promise(r => setTimeout(r, 600));
+        const btns = card.querySelectorAll('button');
+        for (const btn of btns) {
+          const text = btn.textContent || '';
+          if (text.includes('Chat') && !text.includes('Private')) { btn.click(); return 'OK: Clicked Chat (conv 3)'; }
+        }
+        return 'ERROR: Chat button not found (conv 3)';
+      })()
+    timeout: 15
+
+  - action: wait_for_url
+    value: conversations
+    timeout: 120
+
+  - action: wait_for
+    target: kaizen_chat_input
+    timeout: 60
+
+  - action: screenshot
+    screenshot_name: 09_conv3_opened
+
+  # Use js_eval to keep the multi-line tool-chain message intact
+  - action: js_eval
+    value: |
+      (async () => {
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: composer textarea not found (conv 3)';
+        const msg = [
+          'Execute this exact sequence WITHOUT stopping to ask questions:',
+          '1. List the files in the current directory.',
+          '2. Create a file ctx_a.txt with the contents "alpha".',
+          '3. Read ctx_a.txt and tell me its contents.',
+          '4. Create a file ctx_b.txt with the contents "beta".',
+          '5. Read ctx_b.txt and tell me its contents.',
+          '6. Delete ctx_a.txt.',
+          '7. List files again.',
+          '8. Create ctx_c.txt with contents "gamma".',
+          '9. Read all three files (a, b, c) and report contents — note which no longer exist.',
+          'After all 9 steps, summarize what you did in one sentence.'
+        ].join('\n');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        composer.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'OK: typed tool-chain prompt';
+      })()
+    timeout: 10
+
+  - action: click
+    target: kaizen_send_button
+    timeout: 10
+
+  # Tool chain takes a while
+  - action: sleep
+    timeout: 150
+
+  - action: screenshot
+    screenshot_name: 10_conv3_tool_chain_result
+    validate:
+      - no_errors: true
+
+  - action: screenshot
+    screenshot_name: 99_final

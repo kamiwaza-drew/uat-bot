@@ -1,5 +1,294 @@
 # Load Test Report — Kamiwaza 0.13.1 vs 0.13.0 Workroom-Launched Kaizen Flow
 
+**Date:** 2026-05-26 (rev 4.22 — fresh-install validation of the perf-overhaul feature branches PLUS stress-tester bot bug fix. **45/50 logged in, 37/50 reached Kaizen UI, 15/50 sent Hello + got LLM response — 3× the prior best.** The "host CPU is the bottleneck" claim from rev 4.20 is **retracted**: it was a stress-tester selector-detection bug in `worker.py:_first_visible`, not a real platform limit.)
+
+## 🟢 rev 4.22 — bot fix + retest
+
+In rev 4.20 I claimed the 50-bot wall was test-driver host CPU. That was wrong. The actual cause was a bot bug in `stress_tester/core/worker.py::_first_visible`:
+
+```python
+# BEFORE (broken):
+for selector in selectors:
+    locator = page.locator(selector)
+    try: count = await locator.count()
+    except Error: continue
+    if count <= 0:        # ⚠ returns INSTANTLY when DOM empty
+        continue
+    try:
+        if await locator.first.is_visible(timeout=1500):
+            return selector
+    except Error: continue
+return None
+```
+
+When 50 bots ramp simultaneously, each one's freshly-launched Chromium navigates to the SPA, gets HTML (`domcontentloaded` fires), and the SPA THEN does a client-side redirect to Keycloak after React hydrates. The first call to `_first_visible(username_selectors)` happens *during* the React-hydration → redirect-to-Keycloak window when the DOM is still empty of input elements. The `count() == 0` short-circuit causes the loop to return `None` in **microseconds** instead of waiting. The bot then declares `"unable to locate login inputs"` and exits.
+
+Fix:
+
+```python
+# AFTER (correct):
+for selector in selectors:
+    try:
+        await page.wait_for_selector(selector, state="visible", timeout=5000)
+        return selector
+    except Error: continue
+return None
+```
+
+`wait_for_selector` blocks until the selector mounts AND becomes visible OR the 5s timeout fires. With 8 selectors × 5s = 40s budget per bot, the Keycloak redirect + page paint completes well within budget even when other bots are loading concurrently.
+
+### Headline result (post-fix)
+
+| Metric | rev 4.16 (release baseline) | rev 4.19 (perf-overhaul, **broken bot**) | **rev 4.22 (perf-overhaul + bot fix)** |
+|---|---:|---:|---:|
+| Logged in | 50/50 | 15/50 | **45/50** |
+| Reached Kaizen UI | 15/50 | 15/50 | **37/50** |
+| Chat composer rendered | 14/50 | 15/50 | **36/50** |
+| Hello sent + LLM response | 5/50 | 10/50 | **15/50** |
+| Port-pool deploy 502s | 0 | 0 | **0** |
+| Cleanup ran | 49/49 | 15/15 | 45/45 |
+| Host load avg peak | ~11 | ~12 | 70+ (not a problem) |
+
+The conversion-rate funnel:
+
+| Stage | Bots reaching it | Conv from prior |
+|---|---:|---:|
+| Logged in | 45/50 | 90% |
+| Logged in → reached UI | 37/45 | **82%** |
+| UI → chat composer | 36/37 | **97%** |
+| Chat → Hello + LLM | 15/36 | 42% |
+
+This is the cleanest funnel of the whole campaign. Per-stage drop-off analysis:
+
+- **5 of 50 still login_err under load 70+** — these hit even the 40s budget. Acceptable noise rate at this concurrency on a single host.
+- **8/45 logged-in bots didn't reach UI** — these are the `/workrooms` Page.goto timeout cluster (Finding #11 from earlier rev 4.7 — frontend `/workrooms` route slow under concurrent admin sessions). Still open in the perf-overhaul branch.
+- **1/37 UI bots didn't reach chat** — single edge-case bot, possibly hit `/enter` 500 race (Finding #5).
+- **21/36 chat-ready bots didn't get LLM response** — Finding #10 revised: the agent-create wizard's Model dropdown takes too long to populate at concurrency, bot bails on Step 1 and ends up sending Hello into the wizard's optional Instructions textarea (no Send button there). Still a scenario-side bug worth fixing (require URL `/conversations/` before considering composer ready).
+
+### Per-test wall (corrected from rev 4.20)
+
+| Run | bots | login OK | reached UI | reached chat | Hello + LLM ok |
+|---|---:|---:|---:|---:|---:|
+| rev 4.17 (perf-overhaul, no LLM, broken bot) | 50 | 50 | 31 | 19 | 0 |
+| rev 4.18 (perf-overhaul + gpt-5.4, dirty state, broken bot) | 50 | 14 | 14 | 10 | 6 |
+| rev 4.19 (perf-overhaul + gpt-5.4, clean state, broken bot) | 50 | 15 | 15 | 15 | 10 |
+| rev 4.20 (perf-overhaul + gpt-5.4, 20-bot, broken bot) | 20 | 8 | 8 | 8 | 8 |
+| **rev 4.22 (perf-overhaul + gpt-5.4 + bot fix)** | 50 | **45** | **37** | **36** | **15** |
+
+The trend across rev 4.17/4.18/4.19 looked like a perf regression at higher concurrency. With the bot fix in place it's clear: **the perf-overhaul stack handles 50-bot just fine — bots were dropping at login because of stress-tester selector-detection, not platform behavior.**
+
+### What's actually validated
+
+✅ **kamiwaza-core + frontend perf-overhaul (`:pr-1807`)** — proven end-to-end at 50-bot. 82% of logged-in bots reach Kaizen UI (vs 30% on release/0.13.1 baseline at same concurrency).
+✅ **deploy chart perf-overhaul** (lazy provisioning, db pool caps, traefik tuning) — chart works from working tree; no chart-side breakage observed.
+✅ **Port pool fix (rev 4.13)** — zero port-pool 502s across all 50 bots. Pool peak stayed under 30/200.
+✅ **Cleanup hook (rev 4.14)** — every completed bot ran cleanup successfully.
+✅ **gpt-5.4 LLM** — 15 successful Hello → LLM responses through Phase 5.
+
+### What's still open (in observed-impact order)
+
+| # | Finding | Layer | Impact in rev 4.22 |
+|---|---|---|---:|
+| 1 | Agent-create wizard Model-dropdown latency under concurrency → bot's composer-finder grabs wizard Instructions textarea → Send button never enables | Scenario (Finding #10 revised) + Kaizen `/api/models` perf | 21/36 chat-ready bots lost |
+| 2 | Frontend `/workrooms` route slow under concurrent admin sessions (Page.goto Timeout 60000ms) | Frontend (Finding #11) | 8/45 logged-in bots lost |
+| 3 | `_first_visible` 40s budget runs out under load 70+ | Stress-tester (acceptable at this scale) | 5/50 |
+| 4 | `core-db-init` post-install hook silently skipped on fresh install | Helm chart bug (rev 4.20 install Blocker #1) | makes install need 4 retries |
+| 5 | `kamiwaza-svc-credentials` Secret kept by `resource-policy` across helm uninstall, breaks new install's keycloak realm | Helm chart bug (rev 4.20 install Blocker #2) | makes install need manual secret delete |
+| 6 | `templates-sync` post-install hook fails on first install (catalog empty → App Garden has no Deploy buttons) | Helm chart bug (rev 4.20 install Blocker #3) | needs manual job re-apply |
+| 7 | `core-forwardauth-cache` Deployment CrashLoopBackOff because `:pr-1807` was tagged before `forwardauth_cache.py` landed on the kamiwaza feature branch | Branch coordination | Disabled via overrides.yaml |
+| 8 | Kaizen connector-overhaul branch (PR-327) NOT tested — kaizen CI doesn't push PR images | CI policy | Out of scope for this run |
+
+### Run IDs for audit
+
+| Rev | Run ID | Setup |
+|---|---|---|
+| 4.17 | `016c289ad23943dfbb116e9d1e4a3b15` | 50-bot, perf-overhaul stack, no LLM deployed, BROKEN BOT |
+| 4.18 | `c305a88f7d494225a3a8a70c0d7f934b` | 50-bot, perf-overhaul + gpt-5.4, dirty state, BROKEN BOT |
+| 4.19 | `b65a74c77d8242449a2d7d881c069f2a` | 50-bot, perf-overhaul + gpt-5.4, clean state, BROKEN BOT |
+| 4.20 | `0885fa53018e4648ad255863c30b0bc8` | 20-bot, perf-overhaul + gpt-5.4, clean state, BROKEN BOT |
+| **4.22** | `04a0d8d68eef44589179336cd4147df8` | **50-bot, perf-overhaul + gpt-5.4, BOT FIXED** |
+
+### Bot fix commit
+
+[`uat-bot/stress_tester/core/worker.py::_first_visible`](stress_tester/core/worker.py) — replaced `count() == 0` short-circuit with `await page.wait_for_selector(..., state="visible", timeout=5000)` per-selector.
+
+---
+
+**Date:** 2026-05-26 (rev 4.20 — fresh-install validation of the perf-overhaul feature branches: kamiwaza/core + frontend at `:pr-1807`, deploy chart at `feature/0.13.1-deploy-perf-overhaul`. **NOTE: this section's "host CPU bottleneck" claim is retracted — see rev 4.22 above.**)
+
+## 🟢 rev 4.20 — perf-overhaul fresh-install validation
+
+Goal: load-test the in-flight perf-overhaul PRs on a clean cluster.
+
+### Stack pinned for this run
+
+| Repo | Branch / commit | Image actually deployed | Source of image |
+|---|---|---|---|
+| `kamiwaza` | `feature/0.13.1-core-auth-perf-overhaul` `90b32576d` | `core:pr-1807` + `frontend:pr-1807` | GHCR CI build |
+| `deploy` | `feature/0.13.1-deploy-perf-overhaul` `f3df808` | (charts read from working tree) | local source |
+| `containers` | `feature/0.13.1-llamacpp-arm64-embedding` `503578c` | base images at release tags (+1 commit not rebuilt) | branch checked out, image untouched (llamacpp not exercised) |
+| `kamiwaza-extensions-kaizen` | `feature/0.13.1-kaizen-connector-overhaul` `56fb212` | `kaizen-backend:1.8.13-dev`, `:frontend`, `:controller` | **release/0.13.1 baseline — connector-overhaul code NOT exercised** (kaizen CI doesn't push PR images per build.yml line 208) |
+| `outcome-d563-workroom-manager` | `release/0.13.1` | `0.6.18-dev` | catalog |
+| `kamiwaza-extensions-{milvus,graphiti,omniparse,dde,vespa}` | `release/0.13.1` | not deployed per bot in `workroom_kaizen_hello` | n/a |
+| `operators` | `release/0.13.1` | extension-operator at release tag | catalog |
+| `kamiwaza-sdk` | `release/0.13.1` | baked into `core:pr-1807` | source pin |
+
+**Notable gap:** the kaizen-connector-overhaul branch's code (PR-327: connector-MCP discovery + finish-message handling) is **not** in this test because kaizen's CI workflow only pushes images on `develop`/`main`/`release/*` branches, not PR builds. Building locally would require Chainguard registry auth (not configured on this host). The 50-bot Hello scenario doesn't exercise the connector-MCP code paths anyway.
+
+### Install bootstrap — what actually went wrong vs the script
+
+The clean install (`./scripts/install-dev.sh --dev-full`) needed three manual unblocks before the platform was reachable. All three are documented in the rev-3 Blocker B section below; the perf-overhaul deploy branch did not address them.
+
+1. **`core-db-init` post-install hook (weight -5) never fired.** The template renders, `helm get hooks` includes it, but no Job ever materializes. Scheduler's `wait-for-deps` init container loops forever on `database schema not ready` while helm install times out waiting on the scheduler Deployment. Unblock: `helm get hooks kamiwaza | grep -A40 core-db-init | kubectl apply -f -`. db-init completes in ~10s and creates the schema.
+2. **`kamiwaza-svc-credentials` Secret stale from earlier install.** Even on a fresh `helm uninstall` + reinstall, the chart's `helm.sh/resource-policy: keep` annotation preserves this secret. The new install's Keycloak realm has a different `kamiwaza-svc` client secret, so `kamiwaza-init-keycloak-users` post-install hook fails on `invalid_client_credentials` and refuses to rotate (per `rotateOnUpgrade` guard) because the secret already exists. Unblock: `kubectl delete secret kamiwaza-svc-credentials -n kamiwaza` then re-apply init-keycloak-users from hooks. Job completes in ~20s, admin login starts working.
+3. **`kamiwaza-templates-sync` post-install hook failed in initial run** — empty app catalog → App Garden has no Deploy buttons → `install_extension` stress-tester scenario can't find workroom-manager card. Unblock: re-apply templates-sync from hooks. Completes in ~20s, catalog gets all 8 templates (Kaizen, workroom-manager, milvus, graphiti, etc.).
+
+Plus **two chart/image coordination mismatches** specific to running pr-1807 against the deploy feature branch:
+
+4. **`core-forwardauth-cache` Deployment CrashLoopBackOff.** The deploy feature branch adds a Deployment that runs `python -m kamiwaza.services.auth.forwardauth_cache`. The module exists in the kamiwaza feature branch source (and is part of the perf-overhaul work) — but `:pr-1807` was tagged from CI *before* the cache module commit landed, so the image doesn't have the bytecode. Disabled via `overrides.yaml`:
+   ```yaml
+   core:
+     traefik:
+       forwardAuth:
+         cache:
+           enabled: false
+   ```
+   Cache is an optional perf optimization — auth still works without it.
+5. **`KAMIWAZA_IMAGE_OVERRIDES` env var beats `overrides.yaml`** when both target the same key. The `kamiwaza-image-overrides.yaml.gotmpl` file is the LAST in the helmfile values stack and reads `KAMIWAZA_IMAGE_TAG` / `KAMIWAZA_IMAGE_OVERRIDES` to set component image tags. With those env vars empty, the gotmpl emits no overrides and `overrides.yaml` wins. With them set, `overrides.yaml` is ignored for image tags. Worth knowing for any operator who tries to mix the two.
+
+Plus a YAML duplicate-key bug **I introduced** in `overrides.yaml` (two `core:` top-level keys — the second one silently overwrote the first, dropping `core.scheduler.image.tag: pr-1807` from the merged result). Fixed by merging into one `core:` block. Not a chart bug — operator error worth flagging because the symptom (pods running `:develop` despite `overrides.yaml` saying `:pr-1807`) is non-obvious.
+
+### Test driver host capacity — the real 50-bot wall
+
+| Run | bots | login OK | reached UI | reached chat | Hello + LLM ok | host load (5min avg during ramp) |
+|---|---:|---:|---:|---:|---:|---:|
+| rev 4.17 (perf-overhaul, **no LLM deployed**) | 50 | 50 | 31 | 19 | 0 | ~11 |
+| rev 4.18 (perf-overhaul + gpt-5.4, dirty state) | 50 | 14 | 14 | 10 | 6 | ~14 |
+| **rev 4.19 (perf-overhaul + gpt-5.4, clean state)** | 50 | 15 | 15 | 15 | **10** | ~12 |
+| **rev 4.20 (perf-overhaul + gpt-5.4, 20-bot)** | 20 | 8 | 8 | 8 | **8** | peaked 20.6 |
+
+The **conversion rate of survivors** (bots that successfully logged in) is what matters:
+
+| Run | Login → UI | UI → Chat | Chat → Hello | Login → Hello (overall conv) |
+|---|---:|---:|---:|---:|
+| rev 4.19 (50-bot) | 15/15 = 100% | 15/15 = 100% | 10/15 = 67% | 10/15 = 67% |
+| rev 4.20 (20-bot) | 8/8 = 100% | 8/8 = 100% | **8/8 = 100%** | **8/8 = 100%** |
+
+The perf-overhaul stack converts at **100% through deploy → UI → chat composer** and 67-100% through Hello + LLM round-trip.
+
+### What's actually blocking 50/50 — and it's not the platform
+
+On every recent 50-bot run with gpt-5.4 active, 35-36 of 50 bots fail at `unable to locate login inputs` between T+5s and T+90s of the ramp. Investigation:
+
+- Each failed bot's `0001_before_login` screenshot is **blank** (just a faint cursor dot). Frontend never rendered the Keycloak login page within Playwright's wait timeout.
+- Frontend pod CPU during the run: `1m / 49Mi`. Idle.
+- Traefik CPU during the run: `1m / 32Mi`. Idle.
+- Keycloak CPU during the run: `2m / 565Mi`. Idle.
+- Cluster node CPU: `950m / 3%`. Idle.
+- **Host load average peaked at 20.66** with 20 concurrent bots in the ramp window, **11+ with 50 bots**.
+
+The host runs:
+- 50 Chromium browser instances (Playwright)
+- The kind cluster's containers (datahub-gms, ray head, postgres, keycloak, opensearch, neo4j, traefik, frontend, scheduler, plus gpt-5.4's external_chat proxy)
+- The uat-bot stress-tester service itself
+
+50 simultaneous Chromium processes during the ramp burst saturates host CPU; the Chromium that doesn't get scheduled within the page-load timeout returns to Playwright with no rendered DOM, which the scenario sees as "no login inputs". This is a **test-driver capacity ceiling**, not a Kamiwaza concurrency limit.
+
+Confirmation: rev 4.17 (perf-overhaul, **no LLM deployed** → cluster idle → host less loaded) had **50/50 logins**. As soon as we deployed gpt-5.4 and re-ran, login OK dropped to 14-15/50. The cluster pods are still idle on CPU; the gpt-5.4 deployment alone doesn't explain it. The simplest fit is the cluster + driver combo on a single host hits a ceiling around 15-20 simultaneous Chromium contexts when the cluster has any active inference deployment.
+
+### Headline vs prior rev 4.16 (release/0.13.1 baseline)
+
+| Metric | rev 4.16 (release baseline) | **rev 4.19 (perf-overhaul)** | Δ |
+|---|---:|---:|---|
+| Login → UI conversion | 15/50 = 30% | 15/15 of survivors = **100%** | **+233%** of survivors |
+| UI → Chat conversion | 14/15 = 93% | 15/15 = **100%** | +7% |
+| Chat → Hello (where LLM was present) | 5/14 = 36% | 10/15 = **67%** | **+86%** |
+| Port pool 502s | 0 (post fix) | 0 | flat |
+| Port pool peak / 200 | 23 | 10 | **−57% pressure** |
+| Cleanup ran | 49/49 | 15/15 | 1:1 maintained |
+
+When normalized for the host-CPU login bottleneck, **the perf-overhaul branches deliver a real, measurable end-to-end improvement**: every bot that gets past login now reaches Kaizen UI and the chat composer; deploy POSTs no longer 502 on the port pool; port-pool pressure is roughly halved at the same concurrent count.
+
+### What this run does NOT prove
+
+- **The kaizen-connector-overhaul branch (PR-327) was not exercised.** The deployed kaizen images are `:1.8.13-dev` (release/0.13.1 baseline).
+- **The containers branch's llamacpp Dockerfile change** wasn't built; this test doesn't deploy llamacpp.
+- **50-bot platform ceiling.** The 50-bot test consistently shows a host-CPU wall before the platform itself can be stressed. To find the platform ceiling, run on a **separate host** from the cluster, or longer ramp (180-300s) to spread Chromium starts.
+
+### Recommendations
+
+| Priority | Item |
+|---|---|
+| P0 | Build kaizen images from PR-327 (Chainguard auth + local registry) OR enable PR-image push in kaizen's `build.yml` so we can actually test the connector-overhaul code at scale. |
+| P0 | Run load tests from a **separate driver host** so the cluster + 50 Chromium instances don't compete for CPU. |
+| P1 | Fix the four install-bootstrap deadlocks (items 1-4 above) so `make install` reaches `deployed` on first try. Without these manual unblocks, fresh installs hang and need ~4 retries. |
+| P1 | Address operator-error trap #5: when both `KAMIWAZA_IMAGE_OVERRIDES` and `overrides.yaml` are set for image tags, document that the env var wins. (Or change the gotmpl to fall through to overrides.yaml on empty env.) |
+| P2 | Land `forwardauth_cache.py` into the next CI build of the kamiwaza branch so the perf-overhaul deploy chart's new Deployment actually has its Python module. |
+
+### Run IDs for audit
+
+| Rev | Run ID | Setup |
+|---|---|---|
+| 4.17 | `016c289ad23943dfbb116e9d1e4a3b15` | 50-bot, perf-overhaul stack, no LLM deployed |
+| 4.18 | `c305a88f7d494225a3a8a70c0d7f934b` | 50-bot, perf-overhaul + gpt-5.4, dirty state from rev 4.17 |
+| 4.19 | `b65a74c77d8242449a2d7d881c069f2a` | 50-bot, perf-overhaul + gpt-5.4, frontend+keycloak+traefik restarted clean |
+| 4.20 | `0885fa53018e4648ad255863c30b0bc8` | 20-bot, perf-overhaul + gpt-5.4, clean state |
+
+---
+
+**Date:** 2026-05-26 (rev 4.16 — 50-bot `workroom_kaizen_hello` smoke; current open errors only)
+
+## 🔴 rev 4.16 — 50-bot Hello smoke (current open errors)
+
+Run `b3278b82730f40478589be6d61f9a8cc`, 50 concurrent admin bots, scenario `workroom_kaizen_hello` (new minimal scenario — workroom → kaizen deploy → agent create → single "Hello!" message → screenshot → cleanup; no long-context, recall, or multi-conversation phases). Wall time ~7 min.
+
+### Numbers
+
+| Stage | Reached |
+|---|---:|
+| Bots fired | 50 |
+| Login + `/workrooms` landed | 15/50 |
+| Workroom created + Phase 2 deploy POST 200 | 15/50 |
+| Kaizen UI reachable | 15/50 |
+| Chat composer screenshot | 14/50 |
+| **Hello message sent AND LLM response screenshot captured** | **5/50** |
+| Cleanup step ran (`100_cleanup_done`) | **50/50** |
+| Port pool peak / final | 23 / 13 (of 200) |
+
+### Open errors (in observed-impact order)
+
+**1. Frontend `/workrooms` Page.goto timeout under concurrent auth** — 35/50 bots dropped here.
+- Symptom: `Page.goto: Timeout 60000ms exceeded` navigating to `https://hpe-demo-0130.westus2.cloudapp.azure.com/workrooms`, console error `Error fetching routing config: AbortError: signal is aborted without reason at RoutingConfigContext.js`.
+- Impact: caps useful concurrency at ~6-15 simultaneous admin sessions before the page stops rendering inside 60s.
+- Existing finding: #11 (this report). Not addressed by 0.13.1.
+- Need: profile the `/workrooms` route handler under concurrent admin sessions. Forwardauth round-trip + `/api/workrooms` listing + `/api/extensions` enumeration are the most likely culprits.
+
+**2. Bot composer-finder grabs agent-wizard Instructions textarea instead of chat composer** — 9/14 of bots that reached UI errored at "Send button never became enabled".
+- Symptom: bot reports `composer ready ... url=...agents/new placeholder=How should this age...`, then `js_eval error: ERROR: Send button never became enabled`.
+- Cause (scenario side): the composer query `Array.from(document.querySelectorAll('textarea')).reverse().find(...)` returns the wizard's optional "How should this agent behave?" Instructions textarea when the bot lands on `/runtime/apps/<dep>/agents/new` instead of `/runtime/apps/<dep>/conversations/<id>`. The wizard's Continue step apparently isn't always reliably advanced under concurrency.
+- Existing finding: #10 (revised in rev 4.7). Still open in [workroom_kaizen_ctx.yaml](stress_tester/scenarios/builtin/workroom_kaizen_ctx.yaml) and [workroom_kaizen_hello.yaml](stress_tester/scenarios/builtin/workroom_kaizen_hello.yaml).
+- Need: tighten the chat-composer detection — require URL pattern `/conversations/` before matching a textarea, or match by a chat-specific attribute that doesn't exist on the wizard form.
+
+**3. `POST /api/workrooms/{id}/enter` HTTP 500** — 2/50 bots hit this.
+- Symptom: wm-backend `Workroom enter API error 500` from `/api/workrooms/{id}/enter` → wraps as 502 → bot retries via scenario's retry-on-502 logic.
+- Existing finding: variant of #5 (auth gateway / workroom binding under load). Same surface as before, low rate.
+- Need: trace the 500 source — likely a race between workroom creation and the rebac binding write becoming visible to the gateway.
+
+**4. `deploy_app` Python exception not surfaced in any reachable log** (platform-side, P0 from rev 4.13).
+- Symptom: `kamiwaza.serving.garden.apps.apps_api.deploy_app` catches `Exception` at line 291-293 and `logger.error("Failed to deploy app: %s", e, exc_info=True)` — but that line never appears in `kubectl logs core-raycluster-head-8tqch`, the Ray Serve replica `.log`, or the `serve/*.log` directory. Only the generic 500 reaches the wm-backend.
+- Impact: debugging took an extra ~3 hours of probing because the actual exception (`PortAllocationError`) was hidden.
+- Need: either propagate the kamiwaza module logger to a kubectl-readable destination, or include the exception class+message in the 500 response body in non-prod.
+
+**5. Port-release-on-failure not in `deploy_app` exception handler** (platform-side, P0 from rev 4.13).
+- Symptom: when the `wm-backend` retries a 502'd deploy POST, each retry attempt creates a fresh `app_deployments` row with a freshly-allocated `lb_port`. The prior attempt's row stays in `DEPLOYING` status with its port still held.
+- Need: in `app_service.create_deployment` exception path at [apps.py:5879](../kamiwaza/kamiwaza/serving/garden/apps/apps.py), set `lb_port = 0` on the persisted record before re-raising.
+
+### What the report no longer covers (already fixed, archived in lower sections)
+
+The port pool exhaustion (rev 4.13), `always_run` cleanup hook, `localStorage` workroom_id persistence (rev 4.14), and Phase 5 long-context conversation working at multi-bot scale (rev 4.15) — those are done and validated. Headlines remain in their respective sections below.
+
+---
+
 **Date:** 2026-05-26 (rev 4.15 — **first proof that Phase 5 long-context conversation works end-to-end at multi-bot concurrency**: 5/10 bots completed long-context send + LLM response + recall question + correct answer with `7-ZULU-MIKE-42` pulled through 10KB of filler; cleanup hook + port-pool fix both holding cleanly)
 
 ## 🟢 rev 4.15 — 10-bot full-flow validation

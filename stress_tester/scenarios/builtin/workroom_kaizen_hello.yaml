@@ -1,0 +1,755 @@
+name: workroom_kaizen_hello
+description: Minimal end-to-end Kaizen smoke at concurrency. Creates a workroom, launches Kaizen, walks the agent-create wizard, sends a single "Hello!" message, screenshots the LLM response, and tears down via the wm-backend DELETE API. Skips the long-context / recall / multi-conversation stress phases — use workroom_kaizen_ctx for that.
+timeout: 3600
+required_role: editor
+tags: [workroom, kaizen, smoke, stress]
+
+steps:
+  # ─── Phase 1: Create a new workroom via the wizard ────────────────
+  # Use domcontentloaded (not networkidle): the dashboard SPA keeps polling
+  # /api/* endpoints, so "no network activity for 500ms" never opens under
+  # concurrent load and Page.goto times out at 60s.
+  - action: navigate
+    url: /workrooms
+    wait_for: domcontentloaded
+
+  # Wait explicitly for the Create Workroom button to be interactive before
+  # the next step tries to click it — replaces the implicit "networkidle"
+  # readiness signal we dropped above. 5 min generous budget for SPA hydration
+  # under heavy concurrent load.
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        while (Date.now() - start < 600000) {
+          const btn = Array.from(document.querySelectorAll('button, a')).find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t === 'create workroom' || t.includes('create workroom') || t.includes('new workroom');
+          });
+          if (btn && !btn.disabled) return 'OK: Create Workroom button visible after ' + Math.floor((Date.now()-start)/1000) + 's';
+          await new Promise(r => setTimeout(r, 500));
+        }
+        return 'WARN: Create Workroom button not visible after 300s; will let next step probe DOM';
+      })()
+    timeout: 600
+
+  - action: screenshot
+    screenshot_name: 01_workrooms_landing
+
+  # Click "Create Workroom" trigger
+  - action: js_eval
+    value: |
+      (async () => {
+        const btns = Array.from(document.querySelectorAll('button, a'));
+        const target = btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t.includes('create workroom') || t.includes('new workroom');
+        });
+        if (!target) {
+          const labels = btns.map(b => (b.textContent || '').trim().substring(0, 40)).filter(Boolean);
+          return 'ERROR: Create workroom button not found. Controls: [' + labels.slice(0, 30).join(' | ') + ']';
+        }
+        target.click();
+        return 'OK: opened create-workroom dialog';
+      })()
+    timeout: 60
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: 02_create_dialog_open
+
+  # Fill Title + Classification (both required)
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrName = 'ctx-mgr-uat-' + Date.now().toString(36);
+        const dialog = document.querySelector('[role="dialog"]') || document.body;
+        const allInputs = Array.from(dialog.querySelectorAll('input[type="text"], textarea'));
+        const findByPlaceholder = (frag) => allInputs.find(i =>
+          (i.placeholder || '').toLowerCase().includes(frag.toLowerCase()) ||
+          (i.getAttribute('aria-label') || '').toLowerCase().includes(frag.toLowerCase())
+        );
+        const titleInput = findByPlaceholder('venezuela') || findByPlaceholder('title') || allInputs[0];
+        const classInput = findByPlaceholder('classification') || findByPlaceholder('secret//noforn') || findByPlaceholder('unclassified') || findByPlaceholder('handling') || allInputs[2];
+        if (!titleInput || !classInput) {
+          return 'ERROR: Could not find inputs. count=' + allInputs.length;
+        }
+        const setText = (el, v) => {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setText(titleInput, wrName);
+        setText(classInput, 'UNCLASSIFIED');
+        window.__uat_workroom_name = wrName;
+        return 'OK: filled title=' + wrName;
+      })()
+    timeout: 60
+
+  # Next →
+  - action: js_eval
+    value: |
+      (async () => {
+        const dialog = document.querySelector('[role="dialog"]') || document;
+        const btns = Array.from(dialog.querySelectorAll('button'));
+        const next = btns.find(b => (b.textContent || '').trim().toLowerCase().includes('next'));
+        if (!next) return 'ERROR: Next button not found';
+        next.click();
+        return 'OK: clicked Next';
+      })()
+    timeout: 60
+
+  - action: sleep
+    timeout: 2
+
+  # Review → Create
+  - action: js_eval
+    value: |
+      (async () => {
+        const dialog = document.querySelector('[role="dialog"]') || document;
+        const btns = Array.from(dialog.querySelectorAll('button'));
+        const confirm = btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t === 'create' || t === 'create workroom' || t === 'confirm' || t === 'submit' || t === 'finish';
+        }) || btns.find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return (t.includes('create') || t.includes('confirm') || t.includes('finish')) && !t.includes('cancel');
+        });
+        if (!confirm) return 'ERROR: Confirm button not found';
+        confirm.click();
+        return 'OK: submitted wizard';
+      })()
+    timeout: 60
+
+  - action: sleep
+    timeout: 5
+
+  - action: screenshot
+    screenshot_name: 03_workroom_created
+
+  # ─── Phase 2: Skip UI Launch flow — hit the API directly ─────────
+  # The "Launch" button in the workroom detail panel starts a Kaizen deploy
+  # by POSTing to the workroom-manager backend's /api/deployments endpoint.
+  # We mimic that POST ourselves to get back the deployment ID immediately,
+  # which lets us poll the specific deployment by ID (no need to wait for
+  # it to show up in /extensions, which only lists DEPLOYED entries).
+  # The workroom-manager extension is mounted at /workrooms via its own
+  # Traefik PathPrefix. Its frontend prepends "/workrooms" to all API calls,
+  # so we use the same prefix here to reach the manager backend (not core).
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrName = window.__uat_workroom_name;
+        const start = Date.now();
+        const maxMs = 900000; // 15 min — accommodate cold image pulls + slow first deploy
+        const launcherBase = '/workrooms';
+
+        // 1) Find our workroom_id by name.
+        let workroomId = null;
+        for (let i = 0; i < 150 && !workroomId; i++) {
+          try {
+            const res = await fetch(launcherBase + '/api/workrooms', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            if (res.ok) {
+              const body = await res.json();
+              const items = body.items || body.workrooms || body || [];
+              const wr = items.find(w => (w.name || w.title) === wrName);
+              if (wr) workroomId = wr.id || wr.workroom_id;
+            }
+          } catch (e) { /* keep polling */ }
+          if (!workroomId) await new Promise(r => setTimeout(r, 2000));
+        }
+        if (!workroomId) return 'ERROR: workroom_id not found by name=' + wrName;
+        window.__uat_workroom_id = workroomId;
+        // Persist across page navigations (Kaizen frontend lives on the same origin so
+        // localStorage survives the move from /workrooms → /runtime/apps/<dep>/...).
+        // The always_run cleanup at scenario end reads this back to DELETE the workroom.
+        try { localStorage.setItem('__uat_workroom_id', workroomId); } catch (e) { /* private mode */ }
+        console.log('[poll] workroom_id=' + workroomId);
+
+        // 2) POST to start the deploy. Response includes access_url immediately,
+        // which is the deterministic /runtime/apps/<name>/ path that becomes
+        // valid when the Kaizen pod is Ready. We trust this URL and let the
+        // downstream wait_for kaizen_chat_input absorb the deploy latency.
+        // RETRY-ON-502: under 50-bot concurrency, the workroom-manager backend
+        // 502s when the extension-operator can't keep up with simultaneous KX
+        // creates. Back off and retry up to 8 times with exponential delay.
+        let createRes = null;
+        let createOk = false;
+        let lastErr = '';
+        for (let attempt = 0; attempt < 8; attempt++) {
+          // Add random jitter so 50 bots don't retry in lockstep
+          if (attempt > 0) {
+            const delayMs = Math.min(60000, 5000 * Math.pow(1.6, attempt - 1)) + Math.random() * 5000;
+            console.log('[deploy retry] attempt=' + (attempt+1) + ' after ' + Math.round(delayMs) + 'ms (last=' + lastErr + ')');
+            await new Promise(r => setTimeout(r, delayMs));
+          }
+          try {
+            createRes = await fetch(launcherBase + '/api/deployments', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ name: wrName, is_ephemeral: false, workroom_id: workroomId })
+            });
+            if (createRes.ok) { createOk = true; break; }
+            const errText = await createRes.text();
+            lastErr = createRes.status + ' ' + errText.substring(0, 80);
+            // Only retry on transient errors (502, 503, 504, 429)
+            if (![502, 503, 504, 429].includes(createRes.status)) {
+              return 'ERROR: POST /deployments failed (non-retryable): ' + lastErr;
+            }
+          } catch (e) {
+            lastErr = 'fetch_error: ' + (e.message || e);
+          }
+        }
+        if (!createOk) {
+          return 'ERROR: POST /deployments failed after 8 retries. last=' + lastErr;
+        }
+        try {
+          const created = await createRes.json();
+          const deploymentId = created.id;
+          const deploymentName = created.name;
+          const accessUrl = created.launch_access_url || created.access_url
+            || (deploymentName ? '/runtime/apps/' + deploymentName + '/' : null);
+          if (!accessUrl) {
+            return 'ERROR: POST succeeded but no access_url. Keys: ' + Object.keys(created).join(',');
+          }
+          window.__uat_deployment_id = deploymentId;
+          window.__uat_deployment_name = deploymentName;
+          window.__uat_kaizen_url = accessUrl;
+          console.log('[deploy started] id=' + deploymentId + ' name=' + deploymentName + ' status=' + (created.status || '?') + ' url=' + accessUrl);
+          return 'OK: deploy started, url=' + accessUrl;
+        } catch (e) {
+          return 'ERROR: failed to start deploy: ' + (e.message || e);
+        }
+      })()
+    timeout: 960
+
+  - action: screenshot
+    screenshot_name: 06_deploy_started
+
+  # ─── Phase 4: Wait for Kaizen UI to be reachable (via fetch) ──────
+  # The Kamiwaza shell serves "Page Not Found" at HTTP 200 for any unknown
+  # /runtime/apps/... path until the Traefik IngressRoute is created.
+  # We poll the URL via fetch (no page navigation = JS context survives)
+  # and check the response HTML for not-found text. When the HTML stops
+  # being the Kamiwaza shell, the Kaizen pod is serving it — at that point
+  # we trigger a one-time navigation and end the js_eval.
+  - action: js_eval
+    value: |
+      (async () => {
+        const url = window.__uat_kaizen_url;
+        if (!url) return 'ERROR: __uat_kaizen_url not set';
+        const abs = new URL(url, location.origin).toString();
+        const start = Date.now();
+        const maxMs = 900000; // 15 min — accommodate slow first deploy under load
+        let lastSig = '';
+        while (Date.now() - start < maxMs) {
+          let html = '';
+          let code = 0;
+          try {
+            const res = await fetch(abs, { credentials: 'include', redirect: 'follow' });
+            code = res.status;
+            html = await res.text();
+          } catch (e) {
+            code = -1;
+          }
+          const lower = html.toLowerCase();
+          // Definitive discriminator: when the Traefik IngressRoute for the
+          // Kaizen deployment doesn't exist yet, the URL falls through to
+          // the Kamiwaza shell SPA (title "Kamiwaza Dashboard"). Once the
+          // IngressRoute is registered, traffic goes to the Kaizen pod which
+          // serves its own HTML (different <title>).
+          const isKamiwazaShell = lower.includes('<title>kamiwaza dashboard</title>') || lower.includes('kamiwaza dashboard');
+          const isKaizen = !isKamiwazaShell && code >= 200 && code < 400 && html.length > 0;
+          const sig = 'code=' + code + ' len=' + html.length + ' shell=' + isKamiwazaShell;
+          if (sig !== lastSig) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] poll ' + sig);
+            lastSig = sig;
+          }
+          // Accept either a Kaizen-served HTML response (2xx, no shell title)
+          // OR a 401 — both indicate the Traefik IngressRoute is live and
+          // routing to the Kaizen pod. The 401 just means Kaizen wants a
+          // launch token; we'll mint one in the next step.
+          if (isKaizen || code === 401) {
+            window.__uat_kaizen_ready_after_s = Math.floor((Date.now()-start)/1000);
+            return 'OK: Kaizen route is live after ' + window.__uat_kaizen_ready_after_s + 's (code=' + code + ')';
+          }
+          await new Promise(r => setTimeout(r, 5000));
+        }
+        return 'ERROR: kaizen URL never returned Kaizen HTML after ' + Math.floor((Date.now()-start)/1000) + 's. last=' + lastSig;
+      })()
+    timeout: 960
+
+  # Bind the session to our workroom. Kaizen's app-layer checks the user's
+  # active workroom_id against the workroom that owns this Kaizen deployment;
+  # without enter, the UI shows "could not verify workroom access" even
+  # though forward-auth lets the navigation through.
+  # AUTH_RUNTIME_LAUNCH_TOKENS_ENABLED=false on this cluster, so we skip
+  # the kw_launch token mint entirely — session + workroom binding is enough.
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrId = window.__uat_workroom_id;
+        const res = await fetch('/api/workrooms/' + wrId + '/enter', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Accept': 'application/json' }
+        });
+        const body = await res.text();
+        if (!res.ok) {
+          return 'ERROR: enter failed: ' + res.status + ' body=' + body.substring(0, 200);
+        }
+        return 'OK: bound session to workroom ' + wrId + ' (http=' + res.status + ')';
+      })()
+    timeout: 120
+
+  # Navigate (NOT fetch) to the Kaizen UI. Playwright navigation triggers
+  # the full forward-auth flow that fetch bypasses.
+  - action: js_eval
+    value: |
+      (async () => {
+        const url = window.__uat_kaizen_url;
+        if (!url) return 'ERROR: __uat_kaizen_url missing';
+        const abs = new URL(url, location.origin).toString();
+        location.assign(abs);
+        return 'OK: navigating to ' + abs;
+      })()
+    timeout: 60
+
+  - action: sleep
+    timeout: 60
+
+  - action: sleep
+    timeout: 60
+
+  - action: screenshot
+    screenshot_name: 07_kaizen_ui_loaded
+
+  # New workrooms have zero agents — Kaizen shows "No agents yet — Create your
+  # first AI agent" empty state instead of a chat composer. We must create an
+  # agent before Phase 5 can run.
+  - action: js_eval
+    value: |
+      (async () => {
+        // Wait up to 120s for the UI to settle (the "Create Your First Agent" button
+        // may not be in DOM immediately on first paint, especially under cold-cluster load).
+        const start = Date.now();
+        let target = null;
+        while (Date.now() - start < 300000) {
+          const btns = Array.from(document.querySelectorAll('button, a'));
+          target = btns.find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t.includes('create your first agent') || t === 'create agent' || t === 'new agent' || t === '+ agent';
+          });
+          if (target) break;
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!target) {
+          // Maybe a composer already exists (workroom not fresh) — let next step handle it
+          const tas = document.querySelectorAll('textarea').length;
+          return 'WARN: no Create-Agent button found after 120s; textareas=' + tas + '. Will let composer-wait handle.';
+        }
+        target.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+        target.click();
+        return 'OK: clicked "' + target.textContent.trim().substring(0, 40) + '"';
+      })()
+    timeout: 300
+
+  - action: sleep
+    timeout: 3
+
+  - action: screenshot
+    screenshot_name: 07a_agent_create_form
+
+  # Fill the agent-create form, then click Continue through all 5 wizard steps.
+  # The form is a 5-step wizard:
+  #   Step 1: Name + Model + Instructions ← Model is REQUIRED (<select> element)
+  #   Steps 2-5: Have sane defaults; just click Continue.
+  # Final step's button is "Create Agent" instead of "Continue".
+  - action: js_eval
+    value: |
+      (async () => {
+        const ts = Date.now().toString(36).slice(-6);
+
+        // Helper: find an input/select by looking for a sibling/ancestor LABEL with the given text.
+        function findFieldByLabel(labelText) {
+          const lt = labelText.toLowerCase();
+          // Strategy 1: explicit <label for="...">
+          const labels = Array.from(document.querySelectorAll('label'));
+          for (const lbl of labels) {
+            if ((lbl.textContent || '').trim().toLowerCase() === lt) {
+              const forId = lbl.getAttribute('for');
+              if (forId) {
+                const el = document.getElementById(forId);
+                if (el) return el;
+              }
+              // Strategy 2: label wraps the input
+              const inner = lbl.querySelector('input, select, textarea');
+              if (inner) return inner;
+              // Strategy 3: input is next sibling (or descendant of next sibling)
+              let sib = lbl.nextElementSibling;
+              for (let i = 0; i < 3 && sib; i++) {
+                const el = sib.matches('input, select, textarea') ? sib : sib.querySelector('input, select, textarea');
+                if (el) return el;
+                sib = sib.nextElementSibling;
+              }
+              // Strategy 4: input is in parent's subtree
+              const parentEl = lbl.parentElement?.querySelector('input, select, textarea');
+              if (parentEl && parentEl !== lbl) return parentEl;
+            }
+          }
+          return null;
+        }
+
+        // Fill the Name input
+        const nameInput = findFieldByLabel('Name');
+        if (nameInput) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(nameInput, 'StressTestAgent-' + ts);
+          nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+          nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // Select the Model — find first <option> that mentions gpt or sonnet or similar.
+        // Wait up to 120s for the dropdown to populate (the placeholder is "Loading models..."
+        // until /api/models returns; under cold-cluster load this can take 30-60s+).
+        const modelSelect = findFieldByLabel('Model');
+        let modelChoice = '';
+        if (modelSelect && modelSelect.tagName === 'SELECT') {
+          const waitStart = Date.now();
+          let opts = [];
+          while (Date.now() - waitStart < 300000) {
+            opts = Array.from(modelSelect.querySelectorAll('option')).filter(o => o.value && o.value !== '');
+            if (opts.length > 0) break;
+            await new Promise(r => setTimeout(r, 1000));
+          }
+          if (opts.length > 0) {
+            // Distribute bots across all available chat models — pick one at random
+            // from gpt/sonnet/claude options so concurrent bots exercise different
+            // model deployments rather than dog-piling onto the first one.
+            const chatOpts = opts.filter(o => /gpt|sonnet|claude/i.test(o.textContent || o.value));
+            const pool = chatOpts.length > 0 ? chatOpts : opts;
+            const pick = pool[Math.floor(Math.random() * pool.length)];
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+            setter.call(modelSelect, pick.value);
+            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            modelSelect.dispatchEvent(new Event('input', { bubbles: true }));
+            modelChoice = pick.textContent || pick.value;
+            try { window.__uat_model_choice = modelChoice; } catch (e) {}
+          } else {
+            modelChoice = '(Model dropdown empty after 120s wait — /api/models is hung)';
+          }
+        }
+
+        return 'OK: nameInput=' + !!nameInput + ' modelSelect=' + !!modelSelect + ' modelChoice="' + modelChoice + '"';
+      })()
+    timeout: 300
+
+  - action: sleep
+    timeout: 1
+
+  - action: screenshot
+    screenshot_name: 07b_agent_form_filled
+
+  # Click Continue/Create through all 5 wizard steps.
+  # On each step: find the primary action button (Continue, Next, or Create Agent)
+  # and click it. Repeat up to 6 times. Final step lands us on the agent chat.
+  - action: js_eval
+    value: |
+      (async () => {
+        const log = [];
+        for (let step = 1; step <= 6; step++) {
+          // Find the primary action button
+          const btns = Array.from(document.querySelectorAll('button'));
+          const primary = btns.find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t === 'continue' || t === 'continue >' || t === 'next' ||
+                   t === 'create agent' || t === 'create' || t === 'finish' ||
+                   t === 'done' || t === 'start chatting';
+          });
+          if (!primary) {
+            const labels = btns.map(b => (b.textContent || '').trim().substring(0, 25)).filter(Boolean);
+            log.push('step ' + step + ': no primary button. buttons=[' + labels.slice(0, 8).join('|') + ']');
+            break;
+          }
+          if (primary.disabled) {
+            log.push('step ' + step + ': "' + primary.textContent.trim() + '" disabled');
+            break;
+          }
+          const label = primary.textContent.trim().substring(0, 30);
+          log.push('step ' + step + ': clicked "' + label + '"');
+          primary.click();
+          // Wait briefly for the next step to render
+          await new Promise(r => setTimeout(r, 1500));
+          // If we see a textarea now (chat composer appeared), we're done
+          const tas = Array.from(document.querySelectorAll('textarea')).filter(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          // The instructions textarea on step 1 also matches, so only treat it
+          // as "done" if we've clicked at least once AND no Continue button remains
+          if (tas.length > 0) {
+            const stillContinue = Array.from(document.querySelectorAll('button')).find(b => {
+              const t = (b.textContent || '').trim().toLowerCase();
+              return t === 'continue' || t === 'create agent' || t === 'create' || t === 'finish';
+            });
+            if (!stillContinue) {
+              log.push('  composer detected, wizard complete');
+              return 'OK: ' + log.join(' | ');
+            }
+          }
+        }
+        return 'WARN/done: ' + log.join(' | ');
+      })()
+    timeout: 180
+
+  - action: sleep
+    timeout: 3
+
+  - action: screenshot
+    screenshot_name: 07c_agent_create_submitted
+
+  # After wizard finish, Kaizen lands on the Agents listing page. The agent
+  # card has a "Chat" button that is conditionally rendered only while the
+  # card is hovered (React {isHovered && (<Chat button>)} pattern). Strategy:
+  #   1. Find the StressTestAgent card (the one with the "MINE" badge — the
+  #      user we just created the agent as).
+  #   2. Dispatch mouseenter/pointerenter on the card to flip isHovered=true,
+  #      which causes the Chat button to mount in the DOM.
+  #   3. Click the Chat button (text "Chat" with a MessageSquare icon).
+  #   4. handleStartChat creates a conversation and router.push's to
+  #      /conversations/{id} — the composer textarea will then render.
+  - action: js_eval
+    value: |
+      (async () => {
+        // Wait up to 120s for the agent card to appear (cold-cluster slow render).
+        const start = Date.now();
+        let cardRoot = null;
+        while (Date.now() - start < 300000) {
+          // Composer might already be there (e.g., if Kaizen auto-opened a chat)
+          const earlyTa = Array.from(document.querySelectorAll('textarea')).find(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (earlyTa) return 'OK: composer already present, no agent-click needed';
+
+          // Find the StressTestAgent heading. There may be multiple if previous
+          // runs left agents behind, so prefer the most recent one (MINE).
+          const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'));
+          const myHeadings = headings.filter(el => {
+            const t = (el.textContent || '');
+            if (!t.includes('StressTestAgent')) return false;
+            // Walk up looking for a sibling/descendant element with text "MINE"
+            let p = el.parentElement;
+            for (let i = 0; i < 4 && p; i++) {
+              if ((p.textContent || '').includes('MINE')) return true;
+              p = p.parentElement;
+            }
+            return false;
+          });
+          const heading = myHeadings[0] || headings.find(el => (el.textContent || '').includes('StressTestAgent'));
+          if (heading) {
+            // Walk up to the card container — the one that has its own
+            // hover handler. We want the OUTERMOST div that's still
+            // this one card (not the grid wrapper).
+            let cur = heading;
+            for (let i = 0; i < 6 && cur && cur !== document.body; i++) {
+              cur = cur.parentElement;
+              if (!cur) break;
+              const txt = cur.textContent || '';
+              // If we've walked into a container holding the sibling
+              // "Create New Agent" card, back off — the previous level was the card.
+              if (txt.includes('Create New Agent') && txt.includes('Build a custom AI')) {
+                cardRoot = cur.parentElement === cardRoot ? cardRoot : cardRoot;
+                break;
+              }
+              cardRoot = cur;
+            }
+            if (cardRoot) break;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!cardRoot) return 'WARN: no StressTestAgent card after 120s';
+
+        cardRoot.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+
+        // Dispatch hover events on the card so React's isHovered flips true
+        // and the Chat button mounts in the DOM. We dispatch the events on
+        // EVERY descendant too, since the onMouseEnter handler could be on
+        // any element in the card subtree.
+        const rect = cardRoot.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, view: window,
+                       clientX: rect.left + rect.width/2,
+                       clientY: rect.top + rect.height/2,
+                       pointerType: 'mouse', isPrimary: true, pointerId: 1 };
+        function fireHover(el) {
+          el.dispatchEvent(new MouseEvent('mouseover', opts));
+          el.dispatchEvent(new MouseEvent('mouseenter', opts));
+          el.dispatchEvent(new PointerEvent('pointerover', opts));
+          el.dispatchEvent(new PointerEvent('pointerenter', opts));
+          el.dispatchEvent(new MouseEvent('mousemove', opts));
+        }
+        fireHover(cardRoot);
+        cardRoot.querySelectorAll('*').forEach(fireHover);
+
+        // Wait for the Chat button to render (up to 3s)
+        let chatBtn = null;
+        const hStart = Date.now();
+        while (Date.now() - hStart < 30000) {
+          const btns = Array.from(cardRoot.querySelectorAll('button'));
+          chatBtn = btns.find(b => {
+            const t = (b.textContent || '').trim();
+            // The button text is "Chat" (or "Starting..." while in flight)
+            return t === 'Chat' || t.startsWith('Chat');
+          });
+          if (chatBtn) break;
+          // Keep poking hover, some animation systems require continuous events
+          fireHover(cardRoot);
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        if (!chatBtn) {
+          const allBtns = Array.from(cardRoot.querySelectorAll('button')).map(b => (b.textContent||'').trim().substring(0,20));
+          return 'ERROR: Chat button never rendered after hover. Buttons in card: [' + allBtns.join(' | ') + ']';
+        }
+
+        chatBtn.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 200));
+        chatBtn.click();
+        return 'OK: clicked Chat button on StressTestAgent card';
+      })()
+    timeout: 120
+
+  - action: sleep
+    timeout: 3
+
+  - action: screenshot
+    screenshot_name: 07d_agent_card_clicked
+
+  # Wait for the chat composer to be ready. Kaizen has to:
+  #  - Create a conversation record (handleStartChat → createConversationMutation)
+  #  - Provision the agent's openhands workspace container (the "STARTING /
+  #    Preparing workspace... Setting up StressTestAgent" progress card)
+  #  - Navigate router.push('/conversations/{id}')
+  #  - Render the composer textarea
+  # Workspace provisioning alone takes 2-4 min on this cluster, so give the
+  # whole sequence 6 min before declaring failure.
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        const maxMs = 1200000; // 20 min — accommodate cold cluster + slow /api/models
+        let lastUrl = location.href;
+        let lastSig = '';
+        while (Date.now() - start < maxMs) {
+          // URL transition is the strongest signal that handleStartChat succeeded
+          if (location.href !== lastUrl) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] URL changed: ' + lastUrl + ' -> ' + location.href);
+            lastUrl = location.href;
+          }
+          // Require URL to contain /conversations/ — otherwise we are still
+          // on the create-agent wizard and any textarea we'd find is the
+          // wizard's Instructions field, NOT the chat composer.
+          const onConversationPage = location.href.includes('/conversations/');
+          if (onConversationPage) {
+            const tas = Array.from(document.querySelectorAll('textarea'));
+            const composer = tas.find(t => {
+              const r = t.getBoundingClientRect();
+              return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+            });
+            if (composer) {
+              return 'OK: composer ready after ' + Math.floor((Date.now()-start)/1000) + 's, url=' + location.href + ' placeholder=' + (composer.placeholder || '');
+            }
+          }
+          // Log progress periodically based on body text signature
+          const sig = (document.body.innerText.match(/STARTING|Preparing workspace|Setting up|Ready|loading|Initializing|Loading models/g) || []).join(',');
+          if (sig !== lastSig) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] state: ' + sig + ' url=' + location.href);
+            lastSig = sig;
+          }
+          await new Promise(r => setTimeout(r, 3000));
+        }
+        const bodyText = (document.body && document.body.innerText.substring(0, 300)) || '?';
+        return 'ERROR: composer not found after ' + Math.floor((Date.now()-start)/1000) + 's. url=' + location.href + ' onConvPage=' + location.href.includes('/conversations/') + ' tas=' + document.querySelectorAll('textarea').length + ' lastSig=' + lastSig + ' body=' + bodyText;
+      })()
+    timeout: 1260
+
+  - action: screenshot
+    screenshot_name: 08_kaizen_chat_ready
+
+
+  # ─── Phase 5: Single "Hello" message + screenshot the response ────
+  - action: js_eval
+    value: |
+      (async () => {
+        if (!location.href.includes('/conversations/')) {
+          return 'ERROR: not on /conversations/ page when trying to send Hello. url=' + location.href;
+        }
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: composer not found';
+        const msg = 'Hello! Please respond with a single short greeting.';
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        // Wait up to 60s for Send button to enable (was 3s).
+        for (let i = 0; i < 1800; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          const sendBtn = document.querySelector('button[aria-label="Send message"]');
+          if (sendBtn && !sendBtn.disabled) {
+            sendBtn.click();
+            return 'OK: hello sent after ' + (i*100) + 'ms';
+          }
+        }
+        return 'ERROR: Send button never became enabled after 60s';
+      })()
+    timeout: 240
+
+  - action: sleep
+    timeout: 180
+
+  - action: screenshot
+    screenshot_name: 09_hello_response
+
+  - action: screenshot
+    screenshot_name: 99_final
+
+  # ─── Cleanup (always_run) ────────────────────────────────────────
+  # Same teardown pattern as workroom_kaizen_ctx — DELETE the workroom
+  # via wm-backend so kamiwaza-core's stop_deployment releases the
+  # lb_port reservation. See uat-bot/load-test-report-0.13.1.md rev 4.13.
+  - action: js_eval
+    always_run: true
+    value: |
+      (async () => {
+        let wrId = window.__uat_workroom_id;
+        if (!wrId) {
+          try { wrId = localStorage.getItem('__uat_workroom_id'); } catch (e) {}
+        }
+        if (!wrId) return 'SKIP: no workroom_id found (bot never reached Phase 2)';
+        try { localStorage.removeItem('__uat_workroom_id'); } catch (e) {}
+        try {
+          const res = await fetch('/workrooms/api/workrooms/' + wrId, {
+            method: 'DELETE',
+            credentials: 'include',
+            headers: { 'Accept': 'application/json' },
+          });
+          if (res.ok || res.status === 404) {
+            return 'OK: DELETE workroom ' + wrId + ' → ' + res.status;
+          }
+          const body = await res.text();
+          return 'WARN: DELETE workroom ' + wrId + ' → ' + res.status + ' ' + body.substring(0, 200);
+        } catch (e) {
+          return 'WARN: DELETE workroom ' + wrId + ' threw: ' + e.message;
+        }
+      })()
+    timeout: 180
+
+  - action: screenshot
+    always_run: true
+    screenshot_name: 100_cleanup_done

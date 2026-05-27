@@ -559,13 +559,6 @@ class Worker:
             )
             raise Error(err)
 
-        await page.fill(username_selector, self.assignment.user.username)
-        await page.fill(password_selector, self.assignment.user.password)
-        if submit_selector:
-            await page.click(submit_selector)
-        else:
-            await page.keyboard.press("Enter")
-
         # Detect Keycloak redirect (ForwardAuth sends to /realms/...)
         is_keycloak = "/realms/" in page.url
         if is_keycloak:
@@ -581,25 +574,254 @@ class Worker:
                 }
             )
 
-        try:
-            await page.wait_for_load_state("networkidle", timeout=20_000)
-        except Error:
-            pass
-
-        # If Keycloak login, wait for redirect back to the extension/app URL
-        if is_keycloak:
+        # Submit the login form and confirm the OIDC redirect actually completed.
+        # Under load, Keycloak can take >30s to process the form POST; if
+        # wait_for_url times out and we silently proceed, the bot ends up with
+        # NO valid session and every subsequent /api/* call returns 401.
+        # Strategy: retry the form submit up to 3 times, each with a 90s wait
+        # for the URL to leave /realms/. On final failure, raise loudly so the
+        # bot is recorded as a login crash, not a downstream auth race.
+        submit_attempts = 3
+        login_succeeded = False
+        for attempt in range(submit_attempts):
+            # (re-)fill credentials in case the page reloaded
             try:
-                await page.wait_for_url(
-                    lambda url: "/realms/" not in url,
-                    timeout=30_000,
-                )
+                await page.fill(username_selector, self.assignment.user.username)
+                await page.fill(password_selector, self.assignment.user.password)
             except Error:
-                pass  # May already be redirected
+                # selectors may have gone stale after a redirect — re-find them
+                username_selector = await self._first_visible(page, [
+                    "input[name='username']", "input[id='username']",
+                    "input[type='email']", "input[name='login']",
+                ])
+                password_selector = await self._first_visible(page, [
+                    "input[name='password']", "input[id='password']",
+                    "input[type='password']",
+                ])
+                if username_selector and password_selector:
+                    await page.fill(username_selector, self.assignment.user.username)
+                    await page.fill(password_selector, self.assignment.user.password)
+            if submit_selector:
+                try:
+                    await page.click(submit_selector)
+                except Error:
+                    await page.keyboard.press("Enter")
+            else:
+                await page.keyboard.press("Enter")
 
             try:
                 await page.wait_for_load_state("networkidle", timeout=20_000)
             except Error:
                 pass
+
+            if not is_keycloak:
+                # Not a Keycloak flow — single submit is enough
+                login_succeeded = True
+                break
+
+            # Wait for redirect off /realms/ — that's the authoritative signal
+            # that the OIDC code exchange completed and the session cookie is set.
+            try:
+                await page.wait_for_url(
+                    lambda url: "/realms/" not in url,
+                    timeout=90_000,
+                )
+                login_succeeded = True
+                break
+            except Error:
+                # Still on /realms/ — Keycloak didn't redirect us. Re-submit.
+                await self.metric_sink({
+                    **self._metric_context,
+                    "run_id": self.run_id,
+                    "worker_id": self.assignment.worker_id,
+                    "action": "login_retry",
+                    "status": "warning",
+                    "duration_ms": int((perf_counter() - ts_start) * 1000),
+                    "detail": f"keycloak redirect didn't complete in 90s on attempt {attempt+1}/{submit_attempts}; url={page.url}",
+                })
+
+        if is_keycloak and not login_succeeded:
+            err = f"keycloak login redirect never completed after {submit_attempts} attempts; still at {page.url}"
+            await self.metric_sink({
+                **self._metric_context,
+                "run_id": self.run_id,
+                "worker_id": self.assignment.worker_id,
+                "action": "login",
+                "status": "error",
+                "duration_ms": int((perf_counter() - ts_start) * 1000),
+                "detail": err,
+            })
+            raise Error(err)
+
+        # Final settle wait once we're off /realms/
+        if is_keycloak:
+            try:
+                await page.wait_for_load_state("networkidle", timeout=20_000)
+            except Error:
+                pass
+
+        # Mirror the dashboard's auth pattern (see kamiwaza/frontend/src/utils/api.js):
+        # 1. POST /api/auth/refresh to exchange the post-login session cookie
+        #    for a JWT bearer token, with retries to absorb the cold-start
+        #    auth race (ForwardAuth/Keycloak token-propagation under load).
+        # 2. Install a context-wide fetch() wrapper that:
+        #      (a) adds Authorization: Bearer <token> to every /api/*,
+        #          /workrooms/api/*, /runtime/* call
+        #      (b) on 401 response, re-runs /api/auth/refresh with the cookie,
+        #          updates the token, and re-issues the original call
+        #          (this exactly mirrors the SPA's response interceptor)
+        # 3. Re-apply the wrapper on every page load via add_init_script so it
+        #    survives page.goto/location.assign/window.location.href = ...
+        try:
+            bearer = await page.evaluate(
+                """async () => {
+                    // Retry /api/auth/refresh up to 8 times with exponential backoff.
+                    // The first ~5 retries cover the cold-start cookie-propagation
+                    // race; the last few cover Keycloak slowness under load.
+                    const backoffsMs = [0, 250, 500, 1000, 2000, 4000, 8000, 16000];
+                    let lastStatus = 0, lastBody = '';
+                    for (let i = 0; i < backoffsMs.length; i++) {
+                        if (backoffsMs[i] > 0) {
+                            await new Promise(r => setTimeout(r, backoffsMs[i]));
+                        }
+                        let r;
+                        try {
+                            r = await fetch('/api/auth/refresh', {
+                                method: 'POST',
+                                credentials: 'include',
+                                headers: { 'Accept': 'application/json' },
+                            });
+                        } catch (e) {
+                            lastStatus = -1;
+                            lastBody = String(e);
+                            continue;
+                        }
+                        lastStatus = r.status;
+                        if (!r.ok) {
+                            try { lastBody = await r.text(); } catch(_) {}
+                            // Only retry on 401/5xx — fail-fast on other errors
+                            if (![401, 500, 502, 503, 504].includes(r.status)) {
+                                return { ok: false, status: r.status, body: lastBody, attempts: i+1 };
+                            }
+                            continue;
+                        }
+                        let body = null;
+                        try { body = await r.json(); } catch(_) {}
+                        const token = body && typeof body.access_token === 'string'
+                            ? body.access_token
+                            : r.headers.get('X-Auth-Token');
+                        if (!token) {
+                            return { ok: false, error: 'no-token-in-refresh', status: r.status, attempts: i+1 };
+                        }
+                        return { ok: true, status: r.status, token_len: token.length, token: token, attempts: i+1 };
+                    }
+                    return { ok: false, status: lastStatus, body: lastBody, attempts: backoffsMs.length };
+                }"""
+            )
+            if not (bearer or {}).get("ok"):
+                err = f"bearer-token bootstrap failed after {bearer.get('attempts')} attempts: {bearer}"
+                await self.metric_sink({
+                    **self._metric_context,
+                    "run_id": self.run_id,
+                    "worker_id": self.assignment.worker_id,
+                    "action": "bearer_token_bootstrap",
+                    "status": "error",
+                    "duration_ms": int((perf_counter() - ts_start) * 1000),
+                    "detail": err,
+                })
+                raise Error(err)
+
+            bearer_token = bearer["token"]
+            # Context-wide fetch wrapper:
+            #   - adds Bearer header to /api/*, /workrooms/api/*, /runtime/*
+            #   - on 401, calls /api/auth/refresh (with cookies), updates
+            #     the closure token, retries the original call once.
+            # Token stored in window.__uat_bearer_token AND closure so refresh
+            # writes are visible. localStorage backup for debugging.
+            init_script = (
+                "(() => {"
+                f"  let TOKEN = '{bearer_token}';"
+                "  window.__uat_bearer_token = TOKEN;"
+                "  if (window.__uat_fetch_patched) return;"
+                "  window.__uat_fetch_patched = true;"
+                "  try { localStorage.setItem('__uat_bearer_token', TOKEN); } catch(_) {}"
+                "  const origFetch = window.fetch.bind(window);"
+                "  let refreshInFlight = null;"
+                "  async function refreshToken() {"
+                "    if (refreshInFlight) return refreshInFlight;"
+                "    refreshInFlight = (async () => {"
+                "      try {"
+                "        const r = await origFetch('/api/auth/refresh', {"
+                "          method: 'POST', credentials: 'include',"
+                "          headers: { 'Accept': 'application/json' }"
+                "        });"
+                "        if (!r.ok) return null;"
+                "        let body = null; try { body = await r.json(); } catch(_) {}"
+                "        const t = body && typeof body.access_token === 'string'"
+                "          ? body.access_token : r.headers.get('X-Auth-Token');"
+                "        if (t) {"
+                "          TOKEN = t;"
+                "          window.__uat_bearer_token = t;"
+                "          try { localStorage.setItem('__uat_bearer_token', t); } catch(_) {}"
+                "        }"
+                "        return t;"
+                "      } catch (_) { return null; }"
+                "      finally { setTimeout(() => { refreshInFlight = null; }, 0); }"
+                "    })();"
+                "    return refreshInFlight;"
+                "  }"
+                "  function addAuth(init) {"
+                "    init = init || {};"
+                "    if (!TOKEN) return init;"
+                "    const h = new Headers(init.headers || {});"
+                "    h.set('Authorization', 'Bearer ' + TOKEN);"
+                "    init.headers = h;"
+                "    return init;"
+                "  }"
+                "  window.fetch = async function patchedFetch(input, init) {"
+                "    const url = typeof input === 'string' ? input : (input && input.url) || '';"
+                "    const isApi = url.includes('/api/') || url.includes('/workrooms/api/') || url.includes('/runtime/');"
+                "    const isRefresh = url.includes('/api/auth/refresh');"
+                "    if (!isApi || isRefresh) return origFetch(input, init);"
+                "    let resp = await origFetch(input, addAuth(init));"
+                "    if (resp.status === 401) {"
+                "      const newTok = await refreshToken();"
+                "      if (newTok) { resp = await origFetch(input, addAuth(init)); }"
+                "    }"
+                "    return resp;"
+                "  };"
+                "})();"
+            )
+            await page.context.add_init_script(init_script)
+            await page.evaluate(init_script)
+
+            await self.metric_sink({
+                **self._metric_context,
+                "run_id": self.run_id,
+                "worker_id": self.assignment.worker_id,
+                "action": "bearer_token_bootstrap",
+                "status": "ok",
+                "duration_ms": int((perf_counter() - ts_start) * 1000),
+                "detail": (
+                    f"bearer token acquired (len={bearer.get('token_len')}, "
+                    f"attempts={bearer.get('attempts')}); fetch wrapper installed "
+                    f"with auto-refresh-on-401"
+                ),
+            })
+        except Error:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            err = f"bearer-token bootstrap raised: {exc}"
+            await self.metric_sink({
+                **self._metric_context,
+                "run_id": self.run_id,
+                "worker_id": self.assignment.worker_id,
+                "action": "bearer_token_bootstrap",
+                "status": "error",
+                "duration_ms": int((perf_counter() - ts_start) * 1000),
+                "detail": err,
+            })
+            raise Error(err)
 
         post_shot = await self.screenshot_manager.capture(
             page,
@@ -625,17 +847,14 @@ class Worker:
         )
 
     async def _first_visible(self, page: Page, selectors: list[str]) -> str | None:
+        # Wait for any selector in the list to become visible. Budget per
+        # selector: 20s (× 8 typical selectors = 160s total worst-case budget
+        # for login inputs to appear, accommodating slow Keycloak login-page
+        # serves under concurrent fresh sessions).
         for selector in selectors:
-            locator = page.locator(selector)
             try:
-                count = await locator.count()
-            except Error:
-                continue
-            if count <= 0:
-                continue
-            try:
-                if await locator.first.is_visible(timeout=1500):
-                    return selector
+                await page.wait_for_selector(selector, state="visible", timeout=20000)
+                return selector
             except Error:
                 continue
         return None

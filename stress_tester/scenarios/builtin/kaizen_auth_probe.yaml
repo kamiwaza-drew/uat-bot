@@ -1,0 +1,66 @@
+name: kaizen_auth_probe
+description: Diagnostic — log in as admin, navigate directly to a known-running Kaizen URL, dump cookies + page content. Used to figure out what auth state Playwright is/isn't sending to /runtime/apps/<id>/.
+timeout: 180
+required_role: editor
+tags: [diagnostic, auth]
+
+steps:
+  - action: navigate
+    url: /workrooms
+    wait_for: networkidle
+
+  - action: screenshot
+    screenshot_name: 01_logged_in
+
+  # Dump cookies + a few other auth-related bits BEFORE navigation
+  - action: js_eval
+    value: |
+      (async () => {
+        const cookies = document.cookie;
+        const origin = location.origin;
+        const path = location.pathname;
+        // Try fetch with credentials to a known existing kaizen
+        const probeUrl = origin + '/runtime/apps/kaizen-71agm4es-9bbe6496/';
+        let fetchStatus = '?';
+        let fetchBodyHead = '';
+        try {
+          const r = await fetch(probeUrl, { credentials: 'include' });
+          fetchStatus = r.status;
+          fetchBodyHead = (await r.text()).substring(0, 120);
+        } catch (e) {
+          fetchStatus = 'EXC: ' + (e.message || e);
+        }
+        return 'OK | origin=' + origin + ' path=' + path
+          + ' | cookies=[' + cookies.replace(/=[^;]+/g, '=<v>').substring(0, 300) + ']'
+          + ' | probe=' + probeUrl
+          + ' | fetch_status=' + fetchStatus
+          + ' | fetch_body=' + fetchBodyHead;
+      })()
+    timeout: 15
+
+  # Now actually NAVIGATE Playwright (not fetch) to the kaizen URL
+  - action: navigate
+    url: /runtime/apps/kaizen-71agm4es-9bbe6496/
+    wait_for: networkidle
+
+  - action: sleep
+    timeout: 5
+
+  - action: screenshot
+    screenshot_name: 02_after_navigate
+
+  # Report what landed
+  - action: js_eval
+    value: |
+      (async () => {
+        const txt = (document.body && document.body.innerText) || '';
+        const tas = document.querySelectorAll('textarea').length;
+        return 'OK | url=' + location.href
+          + ' | title=' + document.title
+          + ' | tas=' + tas
+          + ' | body_head=' + txt.substring(0, 250).replace(/\s+/g, ' ');
+      })()
+    timeout: 10
+
+  - action: screenshot
+    screenshot_name: 03_final

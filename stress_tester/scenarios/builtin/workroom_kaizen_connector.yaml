@@ -1,0 +1,810 @@
+name: workroom_kaizen_connector
+description: End-to-end exercise of the kaizen-connector-overhaul branch's "Discover deployed connector runtime MCPs" code path. Creates a workroom, deploys BOTH Kaizen and a tool-omniparse MCP tool side-by-side in that workroom, then inside Kaizen (a) calls GET /api/v1/mcp/toolshed/available to verify the new discovery endpoint sees the deployed tool, (b) creates an agent, (c) attaches the discovered MCP server to the agent via POST /api/v1/agents/{id}/mcp-servers, (d) sends a prompt that requires tool use, (e) screenshots the response. Cleanup deletes the workroom which cascades to both deployments.
+timeout: 3000
+required_role: editor
+tags: [workroom, kaizen, connector, mcp, discovery]
+
+steps:
+  # ─── Phase 1: Create a new workroom via the wizard ────────────────
+  # wait_for: load (not networkidle) — the dashboard frontend has a 500m CPU
+  # limit and on a busy cluster /workrooms can't reach networkidle in 60s.
+  # 'load' fires once all initial resources are fetched but doesn't wait for
+  # SPA-side polling/SSE to quiesce. The button-find step below polls so it
+  # doesn't matter if React is still hydrating at this point.
+  - action: navigate
+    url: /workrooms
+    wait_for: load
+    timeout: 180
+
+  - action: screenshot
+    screenshot_name: 01_workrooms_landing
+
+  - action: js_eval
+    value: |
+      (async () => {
+        // Poll up to 60s for the button to render — React may still be
+        // hydrating after the page load fires.
+        const start = Date.now();
+        let target = null;
+        while (Date.now() - start < 60000) {
+          const btns = Array.from(document.querySelectorAll('button, a'));
+          target = btns.find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t.includes('create workroom') || t.includes('new workroom');
+          });
+          if (target) break;
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!target) return 'ERROR: Create workroom button not found after 60s wait';
+        target.click();
+        return 'OK: opened create-workroom dialog after ' + Math.floor((Date.now()-start)/1000) + 's';
+      })()
+    timeout: 70
+
+  - action: sleep
+    timeout: 2
+
+  - action: screenshot
+    screenshot_name: 02_create_dialog_open
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrName = 'conn-uat-' + Date.now().toString(36);
+        const dialog = document.querySelector('[role="dialog"]') || document.body;
+        const allInputs = Array.from(dialog.querySelectorAll('input[type="text"], textarea'));
+        const findByPlaceholder = (frag) => allInputs.find(i =>
+          (i.placeholder || '').toLowerCase().includes(frag.toLowerCase()) ||
+          (i.getAttribute('aria-label') || '').toLowerCase().includes(frag.toLowerCase())
+        );
+        const titleInput = findByPlaceholder('venezuela') || findByPlaceholder('title') || allInputs[0];
+        const classInput = findByPlaceholder('classification') || findByPlaceholder('unclassified') || findByPlaceholder('handling') || allInputs[2];
+        if (!titleInput || !classInput) {
+          return 'ERROR: Could not find inputs. count=' + allInputs.length;
+        }
+        const setText = (el, v) => {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setText(titleInput, wrName);
+        setText(classInput, 'UNCLASSIFIED');
+        window.__uat_workroom_name = wrName;
+        return 'OK: filled title=' + wrName;
+      })()
+    timeout: 10
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const dialog = document.querySelector('[role="dialog"]') || document;
+        const next = Array.from(dialog.querySelectorAll('button')).find(b => (b.textContent || '').trim().toLowerCase().includes('next'));
+        if (!next) return 'ERROR: Next button not found';
+        next.click();
+        return 'OK: clicked Next';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 2
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const dialog = document.querySelector('[role="dialog"]') || document;
+        const confirm = Array.from(dialog.querySelectorAll('button')).find(b => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t === 'create' || t === 'create workroom' || t === 'confirm' || t === 'submit' || t === 'finish';
+        });
+        if (!confirm) return 'ERROR: Confirm button not found';
+        confirm.click();
+        return 'OK: submitted wizard';
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 5
+
+  - action: screenshot
+    screenshot_name: 03_workroom_created
+
+  # ─── Phase 2: Deploy Kaizen + tool-omniparse via core API ────
+  # Same /api/deployments pattern as workroom_kaizen_hello, but we
+  # also POST a tool-omniparse deploy into the same workroom so the
+  # kaizen-connector-overhaul "Discover deployed connector runtime MCPs"
+  # code path has something to find. Both deploys are launched concurrently;
+  # we capture deployment_id + access_url for each.
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrName = window.__uat_workroom_name;
+        const launcherBase = '/workrooms';
+
+        // 1) Resolve workroom_id by name.
+        let workroomId = null;
+        for (let i = 0; i < 30 && !workroomId; i++) {
+          try {
+            const res = await fetch(launcherBase + '/api/workrooms', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            if (res.ok) {
+              const body = await res.json();
+              const items = body.items || body.workrooms || body || [];
+              const wr = items.find(w => (w.name || w.title) === wrName);
+              if (wr) workroomId = wr.id || wr.workroom_id;
+            }
+          } catch (e) { /* keep polling */ }
+          if (!workroomId) await new Promise(r => setTimeout(r, 2000));
+        }
+        if (!workroomId) return 'ERROR: workroom_id not found by name=' + wrName;
+        window.__uat_workroom_id = workroomId;
+        try { localStorage.setItem('__uat_workroom_id', workroomId); } catch (e) {}
+        console.log('[poll] workroom_id=' + workroomId);
+
+        // 2) Deploy Kaizen via the wm-backend /api/deployments endpoint.
+        //    The wm-backend's CreateDeploymentRequest schema only accepts
+        //    {name, is_ephemeral, workroom_id} — it always deploys Kaizen
+        //    and ignores any template_name field. So this single call only
+        //    handles Kaizen; the omniparse tool deploy is a separate call below
+        //    to the platform core's /api/tool/deploy-template endpoint.
+        let kCreateRes = null, lastErrK = '';
+        for (let attempt = 0; attempt < 8; attempt++) {
+          if (attempt > 0) {
+            const delayMs = Math.min(60000, 5000 * Math.pow(1.6, attempt - 1)) + Math.random() * 5000;
+            console.log('[kaizen deploy retry] attempt=' + (attempt+1) + ' after ' + Math.round(delayMs) + 'ms');
+            await new Promise(r => setTimeout(r, delayMs));
+          }
+          try {
+            kCreateRes = await fetch(launcherBase + '/api/deployments', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ name: wrName, is_ephemeral: false, workroom_id: workroomId })
+            });
+            if (kCreateRes.ok) break;
+            const errText = await kCreateRes.text();
+            lastErrK = kCreateRes.status + ' ' + errText.substring(0, 80);
+            if (![502, 503, 504, 429].includes(kCreateRes.status)) {
+              return 'ERROR: POST Kaizen /deployments non-retryable: ' + lastErrK;
+            }
+          } catch (e) {
+            lastErrK = 'fetch_error: ' + (e.message || e);
+          }
+        }
+        if (!kCreateRes || !kCreateRes.ok) return 'ERROR: POST Kaizen /deployments failed: ' + lastErrK;
+        const k = await kCreateRes.json();
+        window.__uat_deployment_id = k.id;
+        window.__uat_deployment_name = k.name;
+        window.__uat_kaizen_url = k.launch_access_url || k.access_url || ('/runtime/apps/' + k.name + '/');
+
+        // 3) Deploy tool-omniparse via the platform-core /api/tool/deploy-template
+        //    endpoint. The handler (kamiwaza/serving/garden/tool/tool_api.py:213)
+        //    binds the resulting CR to context.workroom_id from RequesterContext.
+        //    ForwardAuth does NOT auto-inject X-Workroom-Id on this route — an
+        //    earlier scenario rev /enter'd the workroom then deployed and got the
+        //    tool bound to Global anyway. So we MUST pass X-Workroom-Id explicitly,
+        //    otherwise the tool lands in the Global workroom and kaizen's
+        //    workroom-scoped /api/extensions filter hides it from discovery.
+        const toolName = 'uat-omniparse-' + Date.now().toString(36);
+        let tCreateRes = null, lastErrT = '';
+        for (let attempt = 0; attempt < 5; attempt++) {
+          if (attempt > 0) {
+            const delayMs = 3000 * Math.pow(1.6, attempt - 1) + Math.random() * 2000;
+            await new Promise(r => setTimeout(r, delayMs));
+          }
+          try {
+            tCreateRes = await fetch('/api/tool/deploy-template/tool-omniparse', {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-Workroom-Id': workroomId
+              },
+              body: JSON.stringify({ name: toolName })
+            });
+            if (tCreateRes.ok) break;
+            const errText = await tCreateRes.text();
+            lastErrT = tCreateRes.status + ' ' + errText.substring(0, 80);
+            if (![502, 503, 504, 429].includes(tCreateRes.status)) {
+              return 'WARN: POST tool/deploy-template non-retryable: ' + lastErrT + ' (kaizen still launched, continuing)';
+            }
+          } catch (e) {
+            lastErrT = 'fetch_error: ' + (e.message || e);
+          }
+        }
+        if (tCreateRes && tCreateRes.ok) {
+          const t = await tCreateRes.json();
+          window.__uat_tool_deployment_id = t.id;
+          window.__uat_tool_deployment_name = t.name;
+          try { localStorage.setItem('__uat_tool_deployment_id', t.id); } catch (e) {}
+          console.log('[deploy started] kaizen=' + k.id + ' dde=' + t.id + ' dde_name=' + t.name);
+          return 'OK: deploys started kaizen=' + k.name + ' dde=' + t.name + ' url=' + window.__uat_kaizen_url;
+        }
+        return 'WARN: kaizen=' + k.name + ' deployed but omniparse deploy failed: ' + lastErrT + '. Discovery will check existing tools instead.';
+      })()
+    timeout: 960
+
+  - action: screenshot
+    screenshot_name: 06_deploy_started
+
+  # ─── Phase 3: Wait for Kaizen URL to be reachable ─────────────────
+  # Same poll-the-runtime-URL pattern as workroom_kaizen_hello.
+  - action: js_eval
+    value: |
+      (async () => {
+        const url = window.__uat_kaizen_url;
+        if (!url) return 'ERROR: __uat_kaizen_url not set';
+        const abs = new URL(url, location.origin).toString();
+        const start = Date.now();
+        const maxMs = 900000;
+        let lastSig = '';
+        while (Date.now() - start < maxMs) {
+          let html = '', code = 0;
+          try {
+            const res = await fetch(abs, { credentials: 'include', redirect: 'follow' });
+            code = res.status;
+            html = await res.text();
+          } catch (e) { code = -1; }
+          const lower = html.toLowerCase();
+          const isKamiwazaShell = lower.includes('<title>kamiwaza dashboard</title>') || lower.includes('kamiwaza dashboard');
+          const isKaizen = !isKamiwazaShell && code >= 200 && code < 400 && html.length > 0;
+          const sig = 'code=' + code + ' len=' + html.length + ' shell=' + isKamiwazaShell;
+          if (sig !== lastSig) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] poll ' + sig);
+            lastSig = sig;
+          }
+          if (isKaizen || code === 401) {
+            window.__uat_kaizen_ready_after_s = Math.floor((Date.now()-start)/1000);
+            return 'OK: Kaizen route live after ' + window.__uat_kaizen_ready_after_s + 's (code=' + code + ')';
+          }
+          await new Promise(r => setTimeout(r, 5000));
+        }
+        return 'ERROR: kaizen URL never returned Kaizen HTML. last=' + lastSig;
+      })()
+    timeout: 960
+
+  # Bind session to workroom (Kaizen auth check).
+  - action: js_eval
+    value: |
+      (async () => {
+        const wrId = window.__uat_workroom_id;
+        const res = await fetch('/api/workrooms/' + wrId + '/enter', {
+          method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json' }
+        });
+        const body = await res.text();
+        if (!res.ok) return 'ERROR: enter failed: ' + res.status + ' body=' + body.substring(0, 200);
+        return 'OK: bound session to workroom ' + wrId;
+      })()
+    timeout: 30
+
+  # Navigate to Kaizen UI FIRST — forwardauth needs a real browser navigation
+  # to set up the kaizen-runtime session state. A naked fetch() to the
+  # /runtime/apps/<id>/api/* URL before navigation returns 401 even with a
+  # valid /enter, because forwardauth's workroom-binding lookup hasn't been
+  # primed for the kaizen runtime origin yet.
+  - action: js_eval
+    value: |
+      (async () => {
+        const url = window.__uat_kaizen_url;
+        const abs = new URL(url, location.origin).toString();
+        location.assign(abs);
+        return 'OK: navigating to ' + abs;
+      })()
+    timeout: 10
+
+  - action: sleep
+    timeout: 8
+
+  - action: sleep
+    timeout: 8
+
+  - action: screenshot
+    screenshot_name: 07_kaizen_ui_loaded
+
+  # ─── Phase 4: Verify connector-discovery endpoint sees the omniparse tool ─
+  # This is the kaizen-connector-overhaul code path being tested.
+  # GET /api/v1/mcp/toolshed/available is the new endpoint that calls
+  # the platform's /api/extensions, filters for type=tool phase=Running,
+  # and returns each tool's mcp URL.
+  #
+  # We call it from INSIDE the kaizen page context (post-navigation) so
+  # cookies and forwardauth state are already primed for /runtime/apps/<id>/.
+  - action: js_eval
+    value: |
+      (async () => {
+        // After navigation, location.origin is still the kamiwaza domain
+        // but the page now lives at /runtime/apps/<deployment>/. Use
+        // a relative API path so the fetch hits the kaizen pod via traefik.
+        const start = Date.now();
+        const maxMs = 600000; // 10 min — tool deploy may still be initializing
+        let lastBody = '';
+        while (Date.now() - start < maxMs) {
+          let res, body;
+          try {
+            res = await fetch('./api/v1/mcp/toolshed/available', {
+              credentials: 'include', headers: { 'Accept': 'application/json' }
+            });
+            const txt = await res.text();
+            try { body = JSON.parse(txt); } catch { body = { _raw: txt.substring(0, 200) }; }
+          } catch (e) {
+            await new Promise(r => setTimeout(r, 5000));
+            continue;
+          }
+          if (!res.ok) {
+            lastBody = res.status + ' ' + JSON.stringify(body).substring(0, 200);
+            await new Promise(r => setTimeout(r, 5000));
+            continue;
+          }
+          const mcps = body.mcps || [];
+          // The discovery code path should return the omniparse tool we deployed.
+          const found = mcps.find(m =>
+            (m.template_name || '').includes('tool-omniparse') ||
+            (m.name || '').includes('omniparse') ||
+            (m.name || '') === window.__uat_tool_deployment_name
+          );
+          if (found) {
+            window.__uat_tool_mcp_url = found.url;
+            window.__uat_tool_mcp_name = found.name;
+            console.log('[discover] omniparse found: url=' + found.url + ' status=' + found.status);
+            return 'OK: discovery returned omniparse after ' + Math.floor((Date.now()-start)/1000) + 's. total_mcps=' + mcps.length + ' tool_url=' + found.url;
+          }
+          // DIAGNOSTIC: every 60s, dump what /api/extensions sees from the bot's
+          // session so we can distinguish "tool not Running" from "tool filtered
+          // out by per-user/per-workroom auth scope". The discovery endpoint
+          // calls /api/extensions internally; if /api/extensions returns our
+          // tool but discovery doesn't, the connector-overhaul filter logic
+          // is at fault. If /api/extensions also returns empty, the platform
+          // is scoping extensions by workroom membership.
+          const elapsed = Date.now() - start;
+          if (Math.floor(elapsed/60000) > Math.floor((elapsed - 5000)/60000)) {
+            try {
+              const extRes = await fetch('/api/extensions', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+              const extBody = await extRes.json();
+              const all = Array.isArray(extBody) ? extBody : (extBody.items || []);
+              const tools = all.filter(e => (e.type || '') === 'tool');
+              console.log('[' + Math.floor(elapsed/1000) + 's] /api/extensions from bot: total=' + all.length + ' tools=' + tools.length + ' tool_names=[' + tools.map(t => (t.name||'') + '(' + (t.phase||'') + ')').join(',') + ']');
+            } catch (e) {
+              console.log('[' + Math.floor(elapsed/1000) + 's] /api/extensions diag failed: ' + e.message);
+            }
+          }
+          lastBody = 'mcps=' + mcps.length + ' names=[' + mcps.map(m => m.name).join(',') + ']';
+          await new Promise(r => setTimeout(r, 5000));
+        }
+        return 'ERROR: discovery never returned omniparse after ' + Math.floor((Date.now()-start)/1000) + 's. last=' + lastBody;
+      })()
+    timeout: 660
+
+  - action: screenshot
+    screenshot_name: 04_discovery_ok
+
+  # ─── Phase 5: Create the agent via the 5-step wizard ──────────────
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        let target = null;
+        while (Date.now() - start < 120000) {
+          const btns = Array.from(document.querySelectorAll('button, a'));
+          target = btns.find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t.includes('create your first agent') || t === 'create agent' || t === 'new agent' || t === '+ agent';
+          });
+          if (target) break;
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!target) {
+          const tas = document.querySelectorAll('textarea').length;
+          return 'WARN: no Create-Agent button after 120s; textareas=' + tas;
+        }
+        target.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+        target.click();
+        return 'OK: clicked "' + target.textContent.trim().substring(0, 40) + '"';
+      })()
+    timeout: 140
+
+  - action: sleep
+    timeout: 3
+
+  - action: screenshot
+    screenshot_name: 07a_agent_create_form
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const ts = Date.now().toString(36).slice(-6);
+        function findFieldByLabel(labelText) {
+          const lt = labelText.toLowerCase();
+          const labels = Array.from(document.querySelectorAll('label'));
+          for (const lbl of labels) {
+            if ((lbl.textContent || '').trim().toLowerCase() === lt) {
+              const forId = lbl.getAttribute('for');
+              if (forId) { const el = document.getElementById(forId); if (el) return el; }
+              const inner = lbl.querySelector('input, select, textarea');
+              if (inner) return inner;
+              let sib = lbl.nextElementSibling;
+              for (let i = 0; i < 3 && sib; i++) {
+                const el = sib.matches('input, select, textarea') ? sib : sib.querySelector('input, select, textarea');
+                if (el) return el;
+                sib = sib.nextElementSibling;
+              }
+              const parentEl = lbl.parentElement?.querySelector('input, select, textarea');
+              if (parentEl && parentEl !== lbl) return parentEl;
+            }
+          }
+          return null;
+        }
+        const nameInput = findFieldByLabel('Name');
+        if (nameInput) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(nameInput, 'ConnectorTestAgent-' + ts);
+          nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+          nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        const modelSelect = findFieldByLabel('Model');
+        let modelChoice = '';
+        if (modelSelect && modelSelect.tagName === 'SELECT') {
+          const waitStart = Date.now();
+          let opts = [];
+          while (Date.now() - waitStart < 120000) {
+            opts = Array.from(modelSelect.querySelectorAll('option')).filter(o => o.value && o.value !== '');
+            if (opts.length > 0) break;
+            await new Promise(r => setTimeout(r, 1000));
+          }
+          if (opts.length > 0) {
+            const pick = opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
+                         opts.find(o => /sonnet|claude/i.test(o.textContent || o.value)) ||
+                         opts[0];
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+            setter.call(modelSelect, pick.value);
+            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            modelSelect.dispatchEvent(new Event('input', { bubbles: true }));
+            modelChoice = pick.textContent || pick.value;
+          } else {
+            modelChoice = '(Model dropdown empty after 120s)';
+          }
+        }
+        return 'OK: nameInput=' + !!nameInput + ' modelSelect=' + !!modelSelect + ' modelChoice="' + modelChoice + '"';
+      })()
+    timeout: 150
+
+  - action: sleep
+    timeout: 1
+
+  - action: screenshot
+    screenshot_name: 07b_agent_form_filled
+
+  - action: js_eval
+    value: |
+      (async () => {
+        const log = [];
+        for (let step = 1; step <= 6; step++) {
+          const btns = Array.from(document.querySelectorAll('button'));
+          const primary = btns.find(b => {
+            const t = (b.textContent || '').trim().toLowerCase();
+            return t === 'continue' || t === 'continue >' || t === 'next' ||
+                   t === 'create agent' || t === 'create' || t === 'finish' ||
+                   t === 'done' || t === 'start chatting';
+          });
+          if (!primary || primary.disabled) {
+            log.push('step ' + step + ': no enabled primary');
+            break;
+          }
+          log.push('step ' + step + ': clicked "' + primary.textContent.trim() + '"');
+          primary.click();
+          await new Promise(r => setTimeout(r, 1500));
+          const tas = Array.from(document.querySelectorAll('textarea')).filter(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (tas.length > 0) {
+            const stillContinue = Array.from(document.querySelectorAll('button')).find(b => {
+              const t = (b.textContent || '').trim().toLowerCase();
+              return t === 'continue' || t === 'create agent' || t === 'create' || t === 'finish';
+            });
+            if (!stillContinue) {
+              log.push('  composer detected, wizard complete');
+              return 'OK: ' + log.join(' | ');
+            }
+          }
+        }
+        return 'WARN/done: ' + log.join(' | ');
+      })()
+    timeout: 60
+
+  - action: sleep
+    timeout: 3
+
+  - action: screenshot
+    screenshot_name: 07c_agent_create_submitted
+
+  # ─── Phase 6: Discover the agent_id, then attach omniparse as an MCP server ─
+  # Wait for the new agent to appear in /api/agents/, then POST mcp-servers
+  # with the URL returned by the discovery endpoint. This exercises the
+  # full connector-overhaul path: discovery → attach → agent gains tool access.
+  - action: js_eval
+    value: |
+      (async () => {
+        const kaizenBase = window.__uat_kaizen_url.replace(/\/$/, '');
+        const mcpUrl = window.__uat_tool_mcp_url;
+        if (!mcpUrl) return 'ERROR: __uat_tool_mcp_url missing (discovery phase must have failed)';
+
+        // 1) Find our agent by name.
+        const start = Date.now();
+        let agentId = null;
+        while (Date.now() - start < 120000 && !agentId) {
+          try {
+            const res = await fetch(kaizenBase + '/api/agents/', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+            if (res.ok) {
+              const body = await res.json();
+              const items = body.items || body.agents || body || [];
+              const ours = items.find(a => (a.name || '').startsWith('ConnectorTestAgent-'));
+              if (ours) agentId = ours.id;
+            }
+          } catch (e) {}
+          if (!agentId) await new Promise(r => setTimeout(r, 2000));
+        }
+        if (!agentId) return 'ERROR: agent_id not found by name prefix';
+        window.__uat_agent_id = agentId;
+        console.log('[attach] agent_id=' + agentId);
+
+        // 2) Attach the omniparse MCP server.
+        const attachRes = await fetch(kaizenBase + '/api/v1/agents/' + agentId + '/mcp-servers', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({
+            name: 'omniparse',
+            url: mcpUrl,
+            description: 'Kamiwaza Data Discovery Engine (connector-overhaul test)',
+            timeout: 60
+          })
+        });
+        const attachBody = await attachRes.text();
+        if (!attachRes.ok) {
+          return 'ERROR: POST mcp-servers ' + attachRes.status + ' body=' + attachBody.substring(0, 200);
+        }
+        console.log('[attach] POST mcp-servers OK');
+
+        // 3) Verify the attach took effect by re-fetching.
+        const verifyRes = await fetch(kaizenBase + '/api/agents/' + agentId + '/mcp-servers', {
+          credentials: 'include', headers: { 'Accept': 'application/json' }
+        });
+        if (!verifyRes.ok) return 'WARN: verify GET mcp-servers ' + verifyRes.status;
+        const servers = await verifyRes.json();
+        const found = (servers || []).find(s => s.name === 'omniparse');
+        return found
+          ? 'OK: omniparse attached and verified on agent ' + agentId
+          : 'WARN: POST returned OK but GET mcp-servers does not include omniparse (servers=' + JSON.stringify(servers).substring(0, 200) + ')';
+      })()
+    timeout: 180
+
+  - action: screenshot
+    screenshot_name: 07d_mcp_attached
+
+  # ─── Phase 7: Click into the agent to open a chat ─────────────────
+  # Same hover-and-click pattern as workroom_kaizen_hello — the Chat
+  # button is conditionally rendered on hover.
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        let cardRoot = null;
+        while (Date.now() - start < 120000) {
+          const earlyTa = Array.from(document.querySelectorAll('textarea')).find(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (earlyTa && location.href.includes('/conversations/')) return 'OK: composer already present';
+
+          const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'));
+          const heading = headings.find(el => (el.textContent || '').includes('ConnectorTestAgent'));
+          if (heading) {
+            let cur = heading;
+            for (let i = 0; i < 6 && cur && cur !== document.body; i++) {
+              cur = cur.parentElement;
+              if (!cur) break;
+              const txt = cur.textContent || '';
+              if (txt.includes('Create New Agent') && txt.includes('Build a custom AI')) break;
+              cardRoot = cur;
+            }
+            if (cardRoot) break;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!cardRoot) return 'WARN: no ConnectorTestAgent card after 120s';
+
+        cardRoot.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 300));
+
+        const rect = cardRoot.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, view: window,
+                       clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2,
+                       pointerType: 'mouse', isPrimary: true, pointerId: 1 };
+        function fireHover(el) {
+          el.dispatchEvent(new MouseEvent('mouseover', opts));
+          el.dispatchEvent(new MouseEvent('mouseenter', opts));
+          el.dispatchEvent(new PointerEvent('pointerover', opts));
+          el.dispatchEvent(new PointerEvent('pointerenter', opts));
+          el.dispatchEvent(new MouseEvent('mousemove', opts));
+        }
+        fireHover(cardRoot);
+        cardRoot.querySelectorAll('*').forEach(fireHover);
+
+        let chatBtn = null;
+        const hStart = Date.now();
+        while (Date.now() - hStart < 3000) {
+          chatBtn = Array.from(cardRoot.querySelectorAll('button')).find(b => {
+            const t = (b.textContent || '').trim();
+            return t === 'Chat' || t.startsWith('Chat');
+          });
+          if (chatBtn) break;
+          fireHover(cardRoot);
+          await new Promise(r => setTimeout(r, 300));
+        }
+        if (!chatBtn) return 'ERROR: Chat button never rendered after hover';
+        chatBtn.scrollIntoView({block: 'center'});
+        await new Promise(r => setTimeout(r, 200));
+        chatBtn.click();
+        return 'OK: clicked Chat button on ConnectorTestAgent card';
+      })()
+    timeout: 25
+
+  - action: sleep
+    timeout: 3
+
+  - action: screenshot
+    screenshot_name: 07e_agent_card_clicked
+
+  # Wait for the chat composer to be ready at /conversations/{id}.
+  - action: js_eval
+    value: |
+      (async () => {
+        const start = Date.now();
+        const maxMs = 1200000;
+        let lastUrl = location.href;
+        while (Date.now() - start < maxMs) {
+          if (location.href !== lastUrl) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] URL: ' + location.href);
+            lastUrl = location.href;
+          }
+          if (location.href.includes('/conversations/')) {
+            const composer = Array.from(document.querySelectorAll('textarea')).find(t => {
+              const r = t.getBoundingClientRect();
+              return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
+            });
+            if (composer) {
+              return 'OK: composer ready after ' + Math.floor((Date.now()-start)/1000) + 's';
+            }
+          }
+          await new Promise(r => setTimeout(r, 3000));
+        }
+        return 'ERROR: composer not found after ' + Math.floor((Date.now()-start)/1000) + 's';
+      })()
+    timeout: 1260
+
+  - action: screenshot
+    screenshot_name: 08_kaizen_chat_ready
+
+  # ─── Phase 8: Send a prompt that requires the connector tool ──────
+  # The omniparse tool exposes data-discovery capabilities (catalog/vector lookups
+  # via Kamiwaza API). The prompt asks the agent to use it, which should
+  # cause openhands-sdk to invoke the MCP tool URL we attached. The agent's
+  # response (or its tool_call evidence in the UI) is what we screenshot.
+  - action: js_eval
+    value: |
+      (async () => {
+        if (!location.href.includes('/conversations/')) {
+          return 'ERROR: not on /conversations/ page. url=' + location.href;
+        }
+        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
+        if (!composer) return 'ERROR: composer not found';
+        const msg = 'Use the omniparse document-parsing tool to describe what document or file inputs it can accept. After invoking the tool, summarize its capabilities in 2-3 sentences and tell me the exact name of the tool you used.';
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(composer, msg);
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+        for (let i = 0; i < 900; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          const sendBtn = document.querySelector('button[aria-label="Send message"]');
+          if (sendBtn && !sendBtn.disabled) {
+            sendBtn.click();
+            return 'OK: connector-prompt sent after ' + (i*100) + 'ms';
+          }
+        }
+        return 'ERROR: Send button never became enabled after 90s';
+      })()
+    timeout: 120
+
+  # Longer wait than hello — tool invocation + LLM round-trip can take 60-120s.
+  - action: sleep
+    timeout: 120
+
+  - action: screenshot
+    screenshot_name: 09_connector_response
+
+  # Verify the response contains evidence of tool use. We look for:
+  #   (a) "dde" mentioned in the latest assistant message
+  #   (b) a tool_call / tool_result UI element rendered in the conversation
+  #   (c) keywords from the omniparse tool's response surface (datasets/collections/models)
+  - action: js_eval
+    value: |
+      (async () => {
+        // Heuristic: walk conversation messages and look for tool-use markers.
+        // Kaizen renders tool calls as elements with text "Tool: " or specific
+        // CSS classes; we look for either text evidence OR the agent's own
+        // claim that it used the dde tool.
+        const txt = (document.body.innerText || '').toLowerCase();
+        const evidence = {
+          tool_mentioned: txt.toLowerCase().includes('omniparse'),
+          tool_used: /(tool[\s_-]*used|used the .* tool|calling .* tool|tool call)/i.test(document.body.innerText),
+          tool_capability_mentioned: /parse|document|pdf|html|markdown|ocr/i.test(document.body.innerText),
+        };
+        const hits = Object.entries(evidence).filter(([k,v]) => v).map(([k]) => k);
+        if (hits.length >= 2) {
+          return 'OK: tool-use evidence found: [' + hits.join(', ') + ']';
+        }
+        // Surface the assistant's last message body for the report.
+        const blocks = Array.from(document.querySelectorAll('[class*="message"], [data-role="assistant"], article'));
+        const lastAssistant = blocks.reverse().find(b => (b.textContent || '').length > 40 && !b.querySelector('textarea'));
+        const sample = lastAssistant ? lastAssistant.textContent.substring(0, 300) : '(no assistant message found)';
+        return 'WARN: tool-use evidence weak. hits=' + hits.length + '/3 [' + hits.join(', ') + '] sample="' + sample.replace(/\s+/g, ' ') + '"';
+      })()
+    timeout: 30
+
+  - action: screenshot
+    screenshot_name: 99_final
+
+  # ─── Cleanup (always_run) ────────────────────────────────────────
+  # The omniparse tool is deployed cluster-wide (not workroom-scoped) via
+  # /api/tool/deploy-template, so it doesn't cascade with workroom delete.
+  # We clean it up explicitly via DELETE /api/tool/deployment/{id}.
+  # Workroom DELETE cascades to the Kaizen app_deployment as usual.
+  - action: js_eval
+    always_run: true
+    value: |
+      (async () => {
+        const results = [];
+        // 1) Clean up the omniparse tool deployment if one was created.
+        let toolId = window.__uat_tool_deployment_id;
+        if (!toolId) {
+          try { toolId = localStorage.getItem('__uat_tool_deployment_id'); } catch (e) {}
+        }
+        if (toolId) {
+          try { localStorage.removeItem('__uat_tool_deployment_id'); } catch (e) {}
+          try {
+            const r = await fetch('/api/tool/deployment/' + toolId, {
+              method: 'DELETE', credentials: 'include', headers: { 'Accept': 'application/json' },
+            });
+            results.push('dde DELETE → ' + r.status);
+          } catch (e) {
+            results.push('dde DELETE threw: ' + e.message);
+          }
+        } else {
+          results.push('dde SKIP (no id)');
+        }
+        // 2) Clean up the workroom (cascades to Kaizen deployment).
+        let wrId = window.__uat_workroom_id;
+        if (!wrId) {
+          try { wrId = localStorage.getItem('__uat_workroom_id'); } catch (e) {}
+        }
+        if (wrId) {
+          try { localStorage.removeItem('__uat_workroom_id'); } catch (e) {}
+          try {
+            const r = await fetch('/workrooms/api/workrooms/' + wrId, {
+              method: 'DELETE', credentials: 'include', headers: { 'Accept': 'application/json' },
+            });
+            results.push('workroom DELETE → ' + r.status);
+          } catch (e) {
+            results.push('workroom DELETE threw: ' + e.message);
+          }
+        } else {
+          results.push('workroom SKIP (no id)');
+        }
+        return 'CLEANUP: ' + results.join(' | ');
+      })()
+    timeout: 90
+
+  - action: screenshot
+    always_run: true
+    screenshot_name: 100_cleanup_done

@@ -173,14 +173,14 @@ steps:
         // which is the deterministic /runtime/apps/<name>/ path that becomes
         // valid when the Kaizen pod is Ready. We trust this URL and let the
         // downstream wait_for kaizen_chat_input absorb the deploy latency.
-        // RETRY-ON-502: under 50-bot concurrency, the workroom-manager backend
-        // 502s when the extension-operator can't keep up with simultaneous KX
-        // creates. Back off and retry up to 8 times with exponential delay.
+        // Do not retry this POST: under load, the manager can return 502/429
+        // after the deployment CR was already created. Retrying multiplies
+        // orphan Kaizen deployments and turns a throughput failure into a storm.
         let createRes = null;
         let createOk = false;
         let lastErr = '';
-        for (let attempt = 0; attempt < 8; attempt++) {
-          // Add random jitter so 50 bots don't retry in lockstep
+        const maxDeployAttempts = 1;
+        for (let attempt = 0; attempt < maxDeployAttempts; attempt++) {
           if (attempt > 0) {
             const delayMs = Math.min(60000, 5000 * Math.pow(1.6, attempt - 1)) + Math.random() * 5000;
             console.log('[deploy retry] attempt=' + (attempt+1) + ' after ' + Math.round(delayMs) + 'ms (last=' + lastErr + ')');
@@ -205,7 +205,7 @@ steps:
           }
         }
         if (!createOk) {
-          return 'ERROR: POST /deployments failed after 8 retries. last=' + lastErr;
+          return 'ERROR: POST /deployments failed after ' + maxDeployAttempts + ' attempt(s). last=' + lastErr;
         }
         try {
           const created = await createRes.json();
@@ -216,11 +216,23 @@ steps:
           if (!accessUrl) {
             return 'ERROR: POST succeeded but no access_url. Keys: ' + Object.keys(created).join(',');
           }
+          let browserReachableUrl = accessUrl;
+          try {
+            const parsed = new URL(accessUrl, location.origin);
+            if (parsed.pathname.startsWith('/runtime/apps/')) {
+              const runtimePort = location.port === '30443' ? location.port : '30443';
+              const runtimeOrigin = location.protocol + '//' + location.hostname + ':' + runtimePort;
+              browserReachableUrl = runtimeOrigin + parsed.pathname + parsed.search + parsed.hash;
+              console.log('[deploy url normalized] returned=' + accessUrl + ' normalized=' + browserReachableUrl);
+            }
+          } catch (e) {
+            // Keep the original value; downstream polling will surface the real failure.
+          }
           window.__uat_deployment_id = deploymentId;
           window.__uat_deployment_name = deploymentName;
-          window.__uat_kaizen_url = accessUrl;
-          console.log('[deploy started] id=' + deploymentId + ' name=' + deploymentName + ' status=' + (created.status || '?') + ' url=' + accessUrl);
-          return 'OK: deploy started, url=' + accessUrl;
+          window.__uat_kaizen_url = browserReachableUrl;
+          console.log('[deploy started] id=' + deploymentId + ' name=' + deploymentName + ' status=' + (created.status || '?') + ' url=' + browserReachableUrl);
+          return 'OK: deploy started, url=' + browserReachableUrl;
         } catch (e) {
           return 'ERROR: failed to start deploy: ' + (e.message || e);
         }
@@ -230,56 +242,47 @@ steps:
   - action: screenshot
     screenshot_name: 06_deploy_started
 
-  # ─── Phase 4: Wait for Kaizen UI to be reachable (via fetch) ──────
-  # The Kamiwaza shell serves "Page Not Found" at HTTP 200 for any unknown
-  # /runtime/apps/... path until the Traefik IngressRoute is created.
-  # We poll the URL via fetch (no page navigation = JS context survives)
-  # and check the response HTML for not-found text. When the HTML stops
-  # being the Kamiwaza shell, the Kaizen pod is serving it — at that point
-  # we trigger a one-time navigation and end the js_eval.
+  # ─── Phase 4: Wait for Kaizen UI readiness via Workroom Manager ──────
+  # Runtime app routes live on a different local port in this stack, so a
+  # direct cross-origin fetch from the Workroom Manager page is blocked by
+  # CORS. Poll the same-origin deployment status endpoint instead, then
+  # navigate when Workroom Manager/Core report the Kaizen deployment ready.
   - action: js_eval
     value: |
       (async () => {
-        const url = window.__uat_kaizen_url;
-        if (!url) return 'ERROR: __uat_kaizen_url not set';
-        const abs = new URL(url, location.origin).toString();
+        const depId = window.__uat_deployment_id;
+        if (!depId) return 'ERROR: __uat_deployment_id not set';
+        const wrId = window.__uat_workroom_id;
+        const statusUrl = '/workrooms/api/deployments/' + encodeURIComponent(depId)
+          + '/status' + (wrId ? ('?workroom_id=' + encodeURIComponent(wrId)) : '');
         const start = Date.now();
         const maxMs = 900000; // 15 min — accommodate slow first deploy under load
         let lastSig = '';
         while (Date.now() - start < maxMs) {
-          let html = '';
           let code = 0;
+          let status = '';
+          let body = '';
           try {
-            const res = await fetch(abs, { credentials: 'include', redirect: 'follow' });
+            const res = await fetch(statusUrl, { credentials: 'include', headers: { 'Accept': 'application/json' } });
             code = res.status;
-            html = await res.text();
+            body = await res.text();
+            try { status = (JSON.parse(body).status || '').toString(); } catch (_) {}
           } catch (e) {
             code = -1;
           }
-          const lower = html.toLowerCase();
-          // Definitive discriminator: when the Traefik IngressRoute for the
-          // Kaizen deployment doesn't exist yet, the URL falls through to
-          // the Kamiwaza shell SPA (title "Kamiwaza Dashboard"). Once the
-          // IngressRoute is registered, traffic goes to the Kaizen pod which
-          // serves its own HTML (different <title>).
-          const isKamiwazaShell = lower.includes('<title>kamiwaza dashboard</title>') || lower.includes('kamiwaza dashboard');
-          const isKaizen = !isKamiwazaShell && code >= 200 && code < 400 && html.length > 0;
-          const sig = 'code=' + code + ' len=' + html.length + ' shell=' + isKamiwazaShell;
+          const normalized = status.toLowerCase();
+          const sig = 'code=' + code + ' status=' + (status || '?');
           if (sig !== lastSig) {
-            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] poll ' + sig);
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] deployment status ' + sig);
             lastSig = sig;
           }
-          // Accept either a Kaizen-served HTML response (2xx, no shell title)
-          // OR a 401 — both indicate the Traefik IngressRoute is live and
-          // routing to the Kaizen pod. The 401 just means Kaizen wants a
-          // launch token; we'll mint one in the next step.
-          if (isKaizen || code === 401) {
+          if (normalized === 'running' || normalized === 'ready' || normalized === 'deployed') {
             window.__uat_kaizen_ready_after_s = Math.floor((Date.now()-start)/1000);
-            return 'OK: Kaizen route is live after ' + window.__uat_kaizen_ready_after_s + 's (code=' + code + ')';
+            return 'OK: Kaizen deployment ready after ' + window.__uat_kaizen_ready_after_s + 's (status=' + status + ')';
           }
           await new Promise(r => setTimeout(r, 5000));
         }
-        return 'ERROR: kaizen URL never returned Kaizen HTML after ' + Math.floor((Date.now()-start)/1000) + 's. last=' + lastSig;
+        return 'ERROR: kaizen deployment never reached ready after ' + Math.floor((Date.now()-start)/1000) + 's. last=' + lastSig;
       })()
     timeout: 960
 
@@ -776,6 +779,115 @@ steps:
   - action: screenshot
     screenshot_name: 08_kaizen_chat_ready
 
+  - action: js_eval
+    value: |
+      (async () => {
+        window.__uat_runGreetingTurn = async (turnNum, turnText) => {
+          // Wait until the next minute boundary so all bots send roughly together.
+          const msIntoMin = Date.now() % 60000;
+          const waitMs = (60000 - msIntoMin) % 60000;
+          if (waitMs > 100) {
+            await new Promise(r => setTimeout(r, waitMs));
+          }
+          const turnStart = Date.now();
+
+          const conversationId = location.href.split('/conversations/')[1]?.split(/[?#/]/)[0];
+          if (!conversationId) {
+            return 'ERROR turn ' + turnNum + ': conversation id missing from url=' + location.href;
+          }
+
+          const fetchConversationEvents = async (offset = 0) => {
+            const res = await fetch(
+              '/api/conversations/' + conversationId + '/events?offset=' + offset + '&limit=1000&_uat_ts=' + Date.now(),
+              {
+              credentials: 'include',
+              cache: 'no-store',
+              headers: {
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+              }
+            });
+            if (!res.ok) {
+              throw new Error('events_http_' + res.status);
+            }
+            const body = await res.json();
+            if (Array.isArray(body)) return body;
+            if (Array.isArray(body?.events)) return body.events;
+            if (Array.isArray(body?.items)) return body.items;
+            if (Array.isArray(body?.data)) return body.data;
+            return [];
+          };
+
+          let beforeEventCount = 0;
+          try {
+            beforeEventCount = (await fetchConversationEvents()).length;
+          } catch (e) {
+            return 'ERROR turn ' + turnNum + ': failed to read events before send: ' + (e.message || e);
+          }
+
+          const tas = Array.from(document.querySelectorAll('textarea')).reverse();
+          const composer = tas.find(t => {
+            const r = t.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly;
+          });
+          if (!composer) return 'ERROR turn ' + turnNum + ': composer not found';
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(composer, turnText);
+          composer.dispatchEvent(new Event('input', { bubbles: true }));
+
+          let sentMs = 0;
+          for (let i = 0; i < 600; i++) {
+            await new Promise(r => setTimeout(r, 100));
+            const sendBtn = document.querySelector('button[aria-label="Send message"]');
+            if (sendBtn && !sendBtn.disabled) {
+              sendBtn.click();
+              sentMs = Date.now() - turnStart;
+              break;
+            }
+          }
+          if (!sentMs) return 'ERROR turn ' + turnNum + ': send button never enabled';
+
+          const respDeadline = turnStart + 55000;
+          let respMs = 0;
+          let lastEventError = '';
+          while (Date.now() < respDeadline) {
+            try {
+              const newEvents = await fetchConversationEvents(beforeEventCount);
+              const hasVisibleAssistantReply = newEvents.some((event) => {
+                if (event?.kind === 'MessageEvent') {
+                  const role = event?.llm_message?.role;
+                  return role === 'assistant' || event?.source === 'agent';
+                }
+                if (event?.kind === 'ActionEvent') {
+                  return event?.action?.kind === 'FinishAction' && !!(event?.action?.message || '').trim();
+                }
+                return false;
+              });
+              if (hasVisibleAssistantReply) {
+                respMs = Date.now() - turnStart;
+                break;
+              }
+            } catch (e) {
+              lastEventError = e.message || String(e);
+            }
+            await new Promise(r => setTimeout(r, 500));
+          }
+
+          if (!window.__uat_turn_log) window.__uat_turn_log = [];
+          window.__uat_turn_log.push({
+            turn: turnNum,
+            sent_ms: sentMs,
+            response_ms: respMs,
+            response_ok: respMs > 0
+          });
+
+          return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT') + ' last_event_error=' + lastEventError;
+        };
+        return 'OK: turn helper installed';
+      })()
+    timeout: 60
+
 
 
   # ─── Turn 1/15 ─────────────────────────────────────────────────
@@ -790,65 +902,7 @@ steps:
         const turnNum = 1;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 1: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 1: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -865,65 +919,7 @@ steps:
         const turnNum = 2;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 2: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 2: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -940,65 +936,7 @@ steps:
         const turnNum = 3;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 3: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 3: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1015,65 +953,7 @@ steps:
         const turnNum = 4;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 4: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 4: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1090,65 +970,7 @@ steps:
         const turnNum = 5;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 5: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 5: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1165,65 +987,7 @@ steps:
         const turnNum = 6;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 6: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 6: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1240,65 +1004,7 @@ steps:
         const turnNum = 7;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 7: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 7: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1315,65 +1021,7 @@ steps:
         const turnNum = 8;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 8: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 8: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1390,65 +1038,7 @@ steps:
         const turnNum = 9;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 9: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 9: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1465,65 +1055,7 @@ steps:
         const turnNum = 10;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 10: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 10: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1540,65 +1072,7 @@ steps:
         const turnNum = 11;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 11: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 11: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1615,65 +1089,7 @@ steps:
         const turnNum = 12;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 12: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 12: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1690,65 +1106,7 @@ steps:
         const turnNum = 13;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 13: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 13: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1765,65 +1123,7 @@ steps:
         const turnNum = 14;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 14: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 14: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 
@@ -1840,65 +1140,7 @@ steps:
         const turnNum = 15;
         const turnText = 'Turn ' + turnNum + ' — reply with just one short greeting.';
 
-        // 1) Wait until the next minute boundary so all bots send roughly together
-        const msIntoMin = Date.now() % 60000;
-        const waitMs = (60000 - msIntoMin) % 60000;
-        if (waitMs > 100) {
-          await new Promise(r => setTimeout(r, waitMs));
-        }
-        const turnStart = Date.now();
-
-        // 2) Count existing assistant messages before sending
-        const countAssistant = () => {
-          // Heuristic: messages render as elements with role='assistant' aria or
-          // the simpler approach: count message bubbles. Use a generic message-count.
-          const msgs = document.querySelectorAll('[data-message-id], [data-role], [class*="message"]');
-          return msgs.length;
-        };
-        const beforeCount = countAssistant();
-
-        // 3) Find composer, type, send
-        const tas = Array.from(document.querySelectorAll('textarea')).reverse();
-        const composer = tas.find(t => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !t.disabled && !t.readOnly; });
-        if (!composer) return 'ERROR turn 15: composer not found';
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(composer, turnText);
-        composer.dispatchEvent(new Event('input', { bubbles: true }));
-
-        let sentMs = 0;
-        for (let i = 0; i < 600; i++) {  // up to 60s for Send to enable
-          await new Promise(r => setTimeout(r, 100));
-          const sendBtn = document.querySelector('button[aria-label="Send message"]');
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-            sentMs = Date.now() - turnStart;
-            break;
-          }
-        }
-        if (!sentMs) return 'ERROR turn 15: send button never enabled';
-
-        // 4) Wait for assistant response (up to 50s of the minute budget left)
-        const respDeadline = turnStart + 55000;
-        let respMs = 0;
-        while (Date.now() < respDeadline) {
-          const afterCount = countAssistant();
-          if (afterCount > beforeCount + 1) {  // +1 for user msg, +1 for assistant
-            respMs = Date.now() - turnStart;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 5) Record turn result on window for the next step
-        if (!window.__uat_turn_log) window.__uat_turn_log = [];
-        window.__uat_turn_log.push({
-          turn: turnNum,
-          sent_ms: sentMs,
-          response_ms: respMs,
-          response_ok: respMs > 0
-        });
-
-        return 'turn ' + turnNum + ': sent_ms=' + sentMs + ' response_ms=' + (respMs || 'TIMEOUT');
+        return await window.__uat_runGreetingTurn(turnNum, turnText);
       })()
     timeout: 75
 

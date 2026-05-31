@@ -222,7 +222,8 @@ steps:
             if (parsed.pathname.startsWith('/runtime/apps/')) {
               const runtimePort = location.port === '30443' ? location.port : '30443';
               const runtimeOrigin = location.protocol + '//' + location.hostname + ':' + runtimePort;
-              browserReachableUrl = runtimeOrigin + parsed.pathname + parsed.search + parsed.hash;
+              const runtimePath = parsed.pathname.endsWith('/') ? parsed.pathname : (parsed.pathname + '/');
+              browserReachableUrl = runtimeOrigin + runtimePath + parsed.search + parsed.hash;
               console.log('[deploy url normalized] returned=' + accessUrl + ' normalized=' + browserReachableUrl);
             }
           } catch (e) {

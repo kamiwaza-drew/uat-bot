@@ -150,14 +150,14 @@ steps:
         // which is the deterministic /runtime/apps/<name>/ path that becomes
         // valid when the Kaizen pod is Ready. We trust this URL and let the
         // downstream wait_for kaizen_chat_input absorb the deploy latency.
-        // RETRY-ON-502: under 50-bot concurrency, the workroom-manager backend
-        // 502s when the extension-operator can't keep up with simultaneous KX
-        // creates. Back off and retry up to 8 times with exponential delay.
+        // Do not retry this POST: under load, the manager can return 502/429
+        // after the deployment CR was already created. Retrying multiplies
+        // orphan Kaizen deployments and turns a throughput failure into a storm.
         let createRes = null;
         let createOk = false;
         let lastErr = '';
-        for (let attempt = 0; attempt < 8; attempt++) {
-          // Add random jitter so 50 bots don't retry in lockstep
+        const maxDeployAttempts = 1;
+        for (let attempt = 0; attempt < maxDeployAttempts; attempt++) {
           if (attempt > 0) {
             const delayMs = Math.min(60000, 5000 * Math.pow(1.6, attempt - 1)) + Math.random() * 5000;
             console.log('[deploy retry] attempt=' + (attempt+1) + ' after ' + Math.round(delayMs) + 'ms (last=' + lastErr + ')');
@@ -182,7 +182,7 @@ steps:
           }
         }
         if (!createOk) {
-          return 'ERROR: POST /deployments failed after 8 retries. last=' + lastErr;
+          return 'ERROR: POST /deployments failed after ' + maxDeployAttempts + ' attempt(s). last=' + lastErr;
         }
         try {
           const created = await createRes.json();
@@ -193,11 +193,22 @@ steps:
           if (!accessUrl) {
             return 'ERROR: POST succeeded but no access_url. Keys: ' + Object.keys(created).join(',');
           }
+          let browserReachableUrl = accessUrl;
+          try {
+            const parsed = new URL(accessUrl, location.origin);
+            if (parsed.pathname.startsWith('/runtime/apps/')) {
+              const runtimePath = parsed.pathname.endsWith('/') ? parsed.pathname : (parsed.pathname + '/');
+              browserReachableUrl = location.origin + runtimePath + parsed.search + parsed.hash;
+              console.log('[deploy url normalized] returned=' + accessUrl + ' normalized=' + browserReachableUrl);
+            }
+          } catch (e) {
+            // Keep the original value; downstream polling will surface the real failure.
+          }
           window.__uat_deployment_id = deploymentId;
           window.__uat_deployment_name = deploymentName;
-          window.__uat_kaizen_url = accessUrl;
-          console.log('[deploy started] id=' + deploymentId + ' name=' + deploymentName + ' status=' + (created.status || '?') + ' url=' + accessUrl);
-          return 'OK: deploy started, url=' + accessUrl;
+          window.__uat_kaizen_url = browserReachableUrl;
+          console.log('[deploy started] id=' + deploymentId + ' name=' + deploymentName + ' status=' + (created.status || '?') + ' url=' + browserReachableUrl);
+          return 'OK: deploy started, url=' + browserReachableUrl;
         } catch (e) {
           return 'ERROR: failed to start deploy: ' + (e.message || e);
         }
@@ -207,56 +218,47 @@ steps:
   - action: screenshot
     screenshot_name: 06_deploy_started
 
-  # ─── Phase 4: Wait for Kaizen UI to be reachable (via fetch) ──────
-  # The Kamiwaza shell serves "Page Not Found" at HTTP 200 for any unknown
-  # /runtime/apps/... path until the Traefik IngressRoute is created.
-  # We poll the URL via fetch (no page navigation = JS context survives)
-  # and check the response HTML for not-found text. When the HTML stops
-  # being the Kamiwaza shell, the Kaizen pod is serving it — at that point
-  # we trigger a one-time navigation and end the js_eval.
+  # ─── Phase 4: Wait for Kaizen UI readiness via Workroom Manager ──────
+  # Runtime app routes live on a different local port in this stack, so a
+  # direct cross-origin fetch from the Workroom Manager page is blocked by
+  # CORS. Poll the same-origin deployment status endpoint instead, then
+  # navigate when Workroom Manager/Core report the Kaizen deployment ready.
   - action: js_eval
     value: |
       (async () => {
-        const url = window.__uat_kaizen_url;
-        if (!url) return 'ERROR: __uat_kaizen_url not set';
-        const abs = new URL(url, location.origin).toString();
+        const depId = window.__uat_deployment_id;
+        if (!depId) return 'ERROR: __uat_deployment_id not set';
+        const wrId = window.__uat_workroom_id;
+        const statusUrl = '/workrooms/api/deployments/' + encodeURIComponent(depId)
+          + '/status' + (wrId ? ('?workroom_id=' + encodeURIComponent(wrId)) : '');
         const start = Date.now();
         const maxMs = 600000; // 10 min
         let lastSig = '';
         while (Date.now() - start < maxMs) {
-          let html = '';
           let code = 0;
+          let status = '';
+          let body = '';
           try {
-            const res = await fetch(abs, { credentials: 'include', redirect: 'follow' });
+            const res = await fetch(statusUrl, { credentials: 'include', headers: { 'Accept': 'application/json' } });
             code = res.status;
-            html = await res.text();
+            body = await res.text();
+            try { status = (JSON.parse(body).status || '').toString(); } catch (_) {}
           } catch (e) {
             code = -1;
           }
-          const lower = html.toLowerCase();
-          // Definitive discriminator: when the Traefik IngressRoute for the
-          // Kaizen deployment doesn't exist yet, the URL falls through to
-          // the Kamiwaza shell SPA (title "Kamiwaza Dashboard"). Once the
-          // IngressRoute is registered, traffic goes to the Kaizen pod which
-          // serves its own HTML (different <title>).
-          const isKamiwazaShell = lower.includes('<title>kamiwaza dashboard</title>') || lower.includes('kamiwaza dashboard');
-          const isKaizen = !isKamiwazaShell && code >= 200 && code < 400 && html.length > 0;
-          const sig = 'code=' + code + ' len=' + html.length + ' shell=' + isKamiwazaShell;
+          const normalized = status.toLowerCase();
+          const sig = 'code=' + code + ' status=' + (status || '?');
           if (sig !== lastSig) {
-            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] poll ' + sig);
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] deployment status ' + sig);
             lastSig = sig;
           }
-          // Accept either a Kaizen-served HTML response (2xx, no shell title)
-          // OR a 401 — both indicate the Traefik IngressRoute is live and
-          // routing to the Kaizen pod. The 401 just means Kaizen wants a
-          // launch token; we'll mint one in the next step.
-          if (isKaizen || code === 401) {
+          if (normalized === 'running' || normalized === 'ready' || normalized === 'deployed') {
             window.__uat_kaizen_ready_after_s = Math.floor((Date.now()-start)/1000);
-            return 'OK: Kaizen route is live after ' + window.__uat_kaizen_ready_after_s + 's (code=' + code + ')';
+            return 'OK: Kaizen deployment ready after ' + window.__uat_kaizen_ready_after_s + 's (status=' + status + ')';
           }
           await new Promise(r => setTimeout(r, 5000));
         }
-        return 'ERROR: kaizen URL never returned Kaizen HTML after ' + Math.floor((Date.now()-start)/1000) + 's. last=' + lastSig;
+        return 'ERROR: kaizen deployment never reached ready after ' + Math.floor((Date.now()-start)/1000) + 's. last=' + lastSig;
       })()
     timeout: 660
 
@@ -397,8 +399,8 @@ steps:
         if (modelSelect && modelSelect.tagName === 'SELECT') {
           const opts = Array.from(modelSelect.querySelectorAll('option')).filter(o => o.value && o.value !== '');
           if (opts.length > 0) {
-            // Prefer gpt, then sonnet, then anything non-empty
-            const pick = opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
+            const pick = opts.find(o => /gpt-4o-mini/i.test(o.textContent || o.value)) ||
+                         opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
                          opts.find(o => /sonnet|claude/i.test(o.textContent || o.value)) ||
                          opts[0];
             const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
@@ -499,7 +501,9 @@ steps:
             const r = t.getBoundingClientRect();
             return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
           });
-          if (earlyTa) return 'OK: composer already present, no agent-click needed';
+          if (earlyTa && location.href.includes('/conversations/')) {
+            return 'OK: composer already present, no agent-click needed';
+          }
 
           // Find the StressTestAgent heading. There may be multiple if previous
           // runs left agents behind, so prefer the most recent one (MINE).

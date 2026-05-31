@@ -147,7 +147,8 @@ steps:
         //    handles Kaizen; the omniparse tool deploy is a separate call below
         //    to the platform core's /api/tool/deploy-template endpoint.
         let kCreateRes = null, lastErrK = '';
-        for (let attempt = 0; attempt < 8; attempt++) {
+        const maxKaizenDeployAttempts = 1;
+        for (let attempt = 0; attempt < maxKaizenDeployAttempts; attempt++) {
           if (attempt > 0) {
             const delayMs = Math.min(60000, 5000 * Math.pow(1.6, attempt - 1)) + Math.random() * 5000;
             console.log('[kaizen deploy retry] attempt=' + (attempt+1) + ' after ' + Math.round(delayMs) + 'ms');
@@ -174,7 +175,19 @@ steps:
         const k = await kCreateRes.json();
         window.__uat_deployment_id = k.id;
         window.__uat_deployment_name = k.name;
-        window.__uat_kaizen_url = k.launch_access_url || k.access_url || ('/runtime/apps/' + k.name + '/');
+        const rawKaizenUrl = k.launch_access_url || k.access_url || ('/runtime/apps/' + k.name + '/');
+        let browserReachableKaizenUrl = rawKaizenUrl;
+        try {
+          const parsed = new URL(rawKaizenUrl, location.origin);
+          if (parsed.pathname.startsWith('/runtime/apps/')) {
+            const runtimePath = parsed.pathname.endsWith('/') ? parsed.pathname : (parsed.pathname + '/');
+            browserReachableKaizenUrl = location.origin + runtimePath + parsed.search + parsed.hash;
+            console.log('[kaizen deploy url normalized] returned=' + rawKaizenUrl + ' normalized=' + browserReachableKaizenUrl);
+          }
+        } catch (e) {
+          // Keep the original value; downstream polling will surface the real failure.
+        }
+        window.__uat_kaizen_url = browserReachableKaizenUrl;
 
         // 3) Deploy tool-omniparse via the platform-core /api/tool/deploy-template
         //    endpoint. The handler (kamiwaza/serving/garden/tool/tool_api.py:213)
@@ -452,7 +465,8 @@ steps:
             await new Promise(r => setTimeout(r, 1000));
           }
           if (opts.length > 0) {
-            const pick = opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
+            const pick = opts.find(o => /gpt-4o-mini/i.test(o.textContent || o.value)) ||
+                         opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
                          opts.find(o => /sonnet|claude/i.test(o.textContent || o.value)) ||
                          opts[0];
             const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;

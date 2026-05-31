@@ -536,7 +536,9 @@ steps:
             const r = t.getBoundingClientRect();
             return r.width > 50 && r.height > 0 && !t.disabled && !t.readOnly;
           });
-          if (earlyTa) return 'OK: composer already present, no agent-click needed';
+          if (earlyTa && location.href.includes('/conversations/')) {
+            return 'OK: composer already present, no agent-click needed';
+          }
 
           // Find the StressTestAgent heading. There may be multiple if previous
           // runs left agents behind, so prefer the most recent one (MINE).

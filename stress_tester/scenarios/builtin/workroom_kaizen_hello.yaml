@@ -434,6 +434,7 @@ steps:
     value: |
       (async () => {
         const ts = Date.now().toString(36).slice(-6);
+        const start = Date.now();
 
         // Helper: find an input/select by looking for a sibling/ancestor LABEL with the given text.
         function findFieldByLabel(labelText) {
@@ -465,47 +466,53 @@ steps:
           return null;
         }
 
-        // Fill the Name input
-        const nameInput = findFieldByLabel('Name');
-        if (nameInput) {
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          setter.call(nameInput, 'StressTestAgent-' + ts);
-          nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-          nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-        // Select the Model — find first <option> that mentions gpt or sonnet or similar.
-        // Wait up to 120s for the dropdown to populate (the placeholder is "Loading models..."
-        // until /api/models returns; under cold-cluster load this can take 30-60s+).
-        const modelSelect = findFieldByLabel('Model');
         let modelChoice = '';
-        if (modelSelect && modelSelect.tagName === 'SELECT') {
-          const waitStart = Date.now();
-          let opts = [];
-          while (Date.now() - waitStart < 300000) {
-            opts = Array.from(modelSelect.querySelectorAll('option')).filter(o => o.value && o.value !== '');
-            if (opts.length > 0) break;
-            await new Promise(r => setTimeout(r, 1000));
+        let nameReady = false;
+        let sawModelField = false;
+
+        while (Date.now() - start < 300000) {
+          // Fill the Name input
+          const nameInput = findFieldByLabel('Name');
+          if (nameInput) {
+            const current = (nameInput.value || '').trim();
+            if (!current.startsWith('StressTestAgent-')) {
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+              setter.call(nameInput, 'StressTestAgent-' + ts);
+              nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+              nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            nameReady = true;
           }
-          if (opts.length > 0) {
-            const chatOpts = opts.filter(o => /gpt|sonnet|claude/i.test(o.textContent || o.value));
-            const pool = chatOpts.length > 0 ? chatOpts : opts;
-            // Prefer gpt-4o-mini when it is available so workroom stress runs
-            // isolate Kaizen/runtime behavior instead of random model variance.
-            const preferred = pool.find(o => /gpt-4o-mini/i.test(o.textContent || o.value));
-            const pick = preferred || pool[Math.floor(Math.random() * pool.length)];
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
-            setter.call(modelSelect, pick.value);
-            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-            modelSelect.dispatchEvent(new Event('input', { bubbles: true }));
-            modelChoice = pick.textContent || pick.value;
-            try { window.__uat_model_choice = modelChoice; } catch (e) {}
-          } else {
-            modelChoice = '(Model dropdown empty after 120s wait — /api/models is hung)';
+
+          // Select the Model — wait for a real <select> and at least one option.
+          const modelSelect = findFieldByLabel('Model');
+          if (modelSelect && modelSelect.tagName === 'SELECT') {
+            sawModelField = true;
+            const opts = Array.from(modelSelect.querySelectorAll('option')).filter(o => o.value && o.value !== '');
+            if (opts.length > 0) {
+              const chatOpts = opts.filter(o => /gpt|sonnet|claude/i.test(o.textContent || o.value));
+              const pool = chatOpts.length > 0 ? chatOpts : opts;
+              // Prefer gpt-4o-mini when it is available so workroom stress runs
+              // isolate Kaizen/runtime behavior instead of random model variance.
+              const preferred = pool.find(o => /gpt-4o-mini/i.test(o.textContent || o.value));
+              const pick = preferred || pool[Math.floor(Math.random() * pool.length)];
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+              setter.call(modelSelect, pick.value);
+              modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+              modelSelect.dispatchEvent(new Event('input', { bubbles: true }));
+              modelChoice = pick.textContent || pick.value;
+              try { window.__uat_model_choice = modelChoice; } catch (e) {}
+            }
           }
+
+          if (nameReady && modelChoice) {
+            return 'OK: nameReady=' + nameReady + ' modelReady=true modelChoice="' + modelChoice + '"';
+          }
+
+          await new Promise(r => setTimeout(r, 1000));
         }
 
-        return 'OK: nameInput=' + !!nameInput + ' modelSelect=' + !!modelSelect + ' modelChoice="' + modelChoice + '"';
+        return 'WARN: agent form not fully ready after 300s nameReady=' + nameReady + ' modelField=' + sawModelField + ' modelChoice="' + modelChoice + '"';
       })()
     timeout: 300
 
@@ -523,15 +530,26 @@ steps:
       (async () => {
         const log = [];
         for (let step = 1; step <= 6; step++) {
-          // Find the primary action button
-          const btns = Array.from(document.querySelectorAll('button'));
-          const primary = btns.find(b => {
-            const t = (b.textContent || '').trim().toLowerCase();
-            return t === 'continue' || t === 'continue >' || t === 'next' ||
-                   t === 'create agent' || t === 'create' || t === 'finish' ||
-                   t === 'done' || t === 'start chatting';
-          });
+          // Find the primary action button and wait for it to become enabled.
+          const waitStart = Date.now();
+          let primary = null;
+          while (Date.now() - waitStart < 120000) {
+            const btns = Array.from(document.querySelectorAll('button'));
+            primary = btns.find(b => {
+              const t = (b.textContent || '').trim().toLowerCase();
+              return t === 'continue' || t === 'continue >' || t === 'next' ||
+                     t === 'create agent' || t === 'create' || t === 'finish' ||
+                     t === 'done' || t === 'start chatting';
+            });
+            if (!primary) {
+              await new Promise(r => setTimeout(r, 1000));
+              continue;
+            }
+            if (!primary.disabled) break;
+            await new Promise(r => setTimeout(r, 1000));
+          }
           if (!primary) {
+            const btns = Array.from(document.querySelectorAll('button'));
             const labels = btns.map(b => (b.textContent || '').trim().substring(0, 25)).filter(Boolean);
             log.push('step ' + step + ': no primary button. buttons=[' + labels.slice(0, 8).join('|') + ']');
             break;

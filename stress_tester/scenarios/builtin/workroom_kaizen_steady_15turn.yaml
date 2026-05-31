@@ -477,12 +477,12 @@ steps:
             await new Promise(r => setTimeout(r, 1000));
           }
           if (opts.length > 0) {
-            // Distribute bots across all available chat models — pick one at random
-            // from gpt/sonnet/claude options so concurrent bots exercise different
-            // model deployments rather than dog-piling onto the first one.
             const chatOpts = opts.filter(o => /gpt|sonnet|claude/i.test(o.textContent || o.value));
             const pool = chatOpts.length > 0 ? chatOpts : opts;
-            const pick = pool[Math.floor(Math.random() * pool.length)];
+            // Prefer gpt-4o-mini when it is available so workroom stress runs
+            // isolate Kaizen/runtime behavior instead of random model variance.
+            const preferred = pool.find(o => /gpt-4o-mini/i.test(o.textContent || o.value));
+            const pick = preferred || pool[Math.floor(Math.random() * pool.length)];
             const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
             setter.call(modelSelect, pick.value);
             modelSelect.dispatchEvent(new Event('change', { bubbles: true }));

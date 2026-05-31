@@ -399,8 +399,8 @@ steps:
         if (modelSelect && modelSelect.tagName === 'SELECT') {
           const opts = Array.from(modelSelect.querySelectorAll('option')).filter(o => o.value && o.value !== '');
           if (opts.length > 0) {
-            // Prefer gpt, then sonnet, then anything non-empty
-            const pick = opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
+            const pick = opts.find(o => /gpt-4o-mini/i.test(o.textContent || o.value)) ||
+                         opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
                          opts.find(o => /sonnet|claude/i.test(o.textContent || o.value)) ||
                          opts[0];
             const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;

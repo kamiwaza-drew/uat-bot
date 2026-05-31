@@ -465,7 +465,8 @@ steps:
             await new Promise(r => setTimeout(r, 1000));
           }
           if (opts.length > 0) {
-            const pick = opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
+            const pick = opts.find(o => /gpt-4o-mini/i.test(o.textContent || o.value)) ||
+                         opts.find(o => /gpt/i.test(o.textContent || o.value)) ||
                          opts.find(o => /sonnet|claude/i.test(o.textContent || o.value)) ||
                          opts[0];
             const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;

@@ -320,11 +320,70 @@ steps:
       })()
     timeout: 60
 
-  - action: sleep
-    timeout: 60
+  # Workroom Manager can report DEPLOYED slightly before the public runtime
+  # route finishes serving the app shell. When that happens, users land on the
+  # transient Kamiwaza "Page Not Found" screen until the route catches up.
+  # Keep retrying the same runtime URL until the real Kaizen UI markers appear.
+  - action: js_eval
+    value: |
+      (async () => {
+        const targetUrl = new URL(window.__uat_kaizen_url || location.href, location.origin).toString();
+        const start = Date.now();
+        const maxMs = 600000; // 10 min
+        let lastSig = '';
+        let lastReloadAt = 0;
+        let reloads = 0;
 
-  - action: sleep
-    timeout: 60
+        const hasKaizenShell = () => {
+          const body = (document.body?.innerText || '').toLowerCase();
+          const nav = Array.from(document.querySelectorAll('button, a, h1, h2, h3')).map(el => (el.textContent || '').trim().toLowerCase());
+          if (body.includes('page not found')) return false;
+          if (nav.some(t => t === 'agents' || t === 'collaboration' || t === 'metrics' || t.includes('create your first agent'))) {
+            return true;
+          }
+          if (body.includes('no conversations yet') || body.includes('create new agent') || body.includes('pick an agent to start chatting')) {
+            return true;
+          }
+          return false;
+        };
+
+        while (Date.now() - start < maxMs) {
+          const body = (document.body?.innerText || '').toLowerCase();
+          const sig = [
+            location.href,
+            body.includes('page not found') ? 'not-found' : '',
+            body.includes('create new agent') ? 'create-agent' : '',
+            body.includes('no conversations yet') ? 'empty-chat' : '',
+            body.includes('agents') ? 'agents' : '',
+          ].filter(Boolean).join('|');
+          if (sig !== lastSig) {
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] runtime shell state: ' + sig);
+            lastSig = sig;
+          }
+
+          if (hasKaizenShell()) {
+            return 'OK: Kaizen UI shell ready after ' + Math.floor((Date.now()-start)/1000) + 's reloads=' + reloads + ' url=' + location.href;
+          }
+
+          const shouldReload =
+            location.href !== targetUrl ||
+            body.includes('page not found') ||
+            (!document.querySelector('button, a, textarea') && Date.now() - start > 15000);
+
+          if (shouldReload && Date.now() - lastReloadAt > 8000) {
+            reloads += 1;
+            lastReloadAt = Date.now();
+            console.log('[' + Math.floor((Date.now()-start)/1000) + 's] reloading runtime url=' + targetUrl + ' reloads=' + reloads);
+            location.assign(targetUrl);
+          }
+
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
+        const body = (document.body?.innerText || '').substring(0, 300) || '?';
+        return 'ERROR: Kaizen UI shell not ready after ' + Math.floor((Date.now()-start)/1000) + 's url=' + location.href + ' body=' + body;
+      })()
+    timeout: 660
 
   - action: screenshot
     screenshot_name: 07_kaizen_ui_loaded

@@ -792,14 +792,28 @@ steps:
           }
           const turnStart = Date.now();
 
-          const conversationId = location.href.split('/conversations/')[1]?.split(/[?#/]/)[0];
-          if (!conversationId) {
+          const resolveConversationId = () =>
+            location.href.split('/conversations/')[1]?.split(/[?#/]/)[0] || '';
+
+          const resolveAppBase = () => {
+            const marker = '/conversations/';
+            const idx = location.pathname.indexOf(marker);
+            if (idx === -1) return '';
+            return location.pathname.slice(0, idx).replace(/\/$/, '');
+          };
+
+          if (!resolveConversationId()) {
             return 'ERROR turn ' + turnNum + ': conversation id missing from url=' + location.href;
           }
 
-          const fetchConversationEvents = async (offset = 0) => {
+          const fetchConversationEvents = async (offset = 0, { allow404 = false } = {}) => {
+            const conversationId = resolveConversationId();
+            if (!conversationId) {
+              throw new Error('conversation_id_missing');
+            }
+            const appBase = resolveAppBase();
             const res = await fetch(
-              '/api/conversations/' + conversationId + '/events?offset=' + offset + '&limit=1000&_uat_ts=' + Date.now(),
+              appBase + '/api/conversations/' + conversationId + '/events?offset=' + offset + '&limit=1000&_uat_ts=' + Date.now(),
               {
               credentials: 'include',
               cache: 'no-store',
@@ -810,6 +824,9 @@ steps:
               }
             });
             if (!res.ok) {
+              if (allow404 && res.status === 404) {
+                return [];
+              }
               throw new Error('events_http_' + res.status);
             }
             const body = await res.json();
@@ -822,7 +839,9 @@ steps:
 
           let beforeEventCount = 0;
           try {
-            beforeEventCount = (await fetchConversationEvents()).length;
+            // Fresh conversation routes can exist before the first turn has
+            // persisted any events; treat a pre-send 404 as "no events yet".
+            beforeEventCount = (await fetchConversationEvents(0, { allow404: true })).length;
           } catch (e) {
             return 'ERROR turn ' + turnNum + ': failed to read events before send: ' + (e.message || e);
           }
@@ -854,7 +873,7 @@ steps:
           let lastEventError = '';
           while (Date.now() < respDeadline) {
             try {
-              const newEvents = await fetchConversationEvents(beforeEventCount);
+              const newEvents = await fetchConversationEvents(beforeEventCount, { allow404: true });
               const hasVisibleAssistantReply = newEvents.some((event) => {
                 if (event?.kind === 'MessageEvent') {
                   const role = event?.llm_message?.role;

@@ -220,10 +220,8 @@ steps:
           try {
             const parsed = new URL(accessUrl, location.origin);
             if (parsed.pathname.startsWith('/runtime/apps/')) {
-              const runtimePort = location.port === '30443' ? location.port : '30443';
-              const runtimeOrigin = location.protocol + '//' + location.hostname + ':' + runtimePort;
               const runtimePath = parsed.pathname.endsWith('/') ? parsed.pathname : (parsed.pathname + '/');
-              browserReachableUrl = runtimeOrigin + runtimePath + parsed.search + parsed.hash;
+              browserReachableUrl = location.origin + runtimePath + parsed.search + parsed.hash;
               console.log('[deploy url normalized] returned=' + accessUrl + ' normalized=' + browserReachableUrl);
             }
           } catch (e) {
@@ -244,10 +242,9 @@ steps:
     screenshot_name: 06_deploy_started
 
   # ─── Phase 4: Wait for Kaizen UI readiness via Workroom Manager ──────
-  # Runtime app routes live on a different local port in this stack, so a
-  # direct cross-origin fetch from the Workroom Manager page is blocked by
-  # CORS. Poll the same-origin deployment status endpoint instead, then
-  # navigate when Workroom Manager/Core report the Kaizen deployment ready.
+  # Runtime app routes are exposed on the same browser origin in this stack.
+  # Poll the same-origin deployment status endpoint, then navigate when
+  # Workroom Manager/Core report the Kaizen deployment ready.
   - action: js_eval
     value: |
       (async () => {
